@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run *)",
+      "PowerShell(npm run dev -- --port 5173)",
+      "PowerShell(Get-Command node, npm -ErrorAction SilentlyContinue | Select-Object Name, Source; [System.Environment]::GetEnvironmentVariable\\(\"Path\", \"User\"\\) -split \";\" | Select-String -Pattern \"node|npm\" -SimpleMatch)",
+      "PowerShell(Get-ChildItem \"C:\\\\Program Files\\\\nodejs\", \"C:\\\\Program Files \\(x86\\)\\\\nodejs\", \"$env:APPDATA\\\\npm\", \"$env:LOCALAPPDATA\\\\Programs\\\\nodejs\" -ErrorAction SilentlyContinue | Select-Object FullName)",
+      "PowerShell($env:PATH -split \";\")"
+    ]
+  }
+}

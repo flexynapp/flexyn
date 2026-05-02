@@ -1,0 +1,745 @@
+// src/components/hub/HubComposer.jsx
+//
+// The Hub composer supports two post kinds:
+//   1. Status — free-text only, no images, profanity-filtered.
+//   2. Activity-tied — picks from real workouts/cardio/meals/goals/etc.
+//      Optional caption (also profanity-filtered).
+//
+// There is no file picker for posting content — progress photos are the only
+// image source, and they're chosen from the user's saved progress photos.
+import { useEffect, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { motion, AnimatePresence } from 'framer-motion';
+import {
+  X, Send, Globe2, Lock,
+  Dumbbell, Activity, Apple, Target, Trophy, ListChecks, Image as ImageIcon, BarChart3,
+  ArrowLeft, Loader2, MessageSquare, ChevronDown,
+} from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { format, parseISO } from 'date-fns';
+import { useAuth } from '@/lib/AuthContext';
+import { useLanguage } from '@/lib/LanguageContext';
+import { useProfanityGuard } from '@/lib/useProfanityGuard';
+import ProfanityWarningDialog from '@/components/ProfanityWarningDialog';
+import { containsProfanity } from '@/lib/profanityFilter';
+import * as hubPosts from '@/lib/data/hubPosts';
+import * as workouts from '@/lib/data/workouts';
+import * as cardio from '@/lib/data/cardio';
+import * as nutrition from '@/lib/data/nutrition';
+import * as goals from '@/lib/data/goals';
+import * as achievements from '@/lib/data/achievements';
+import * as regimens from '@/lib/data/regimens';
+import { loadProgressPhotos } from '@/components/progress/ProgressPhotoCapture';
+import { base44 } from '@/api/base44Client';
+import { toast } from 'sonner';
+
+// Trim a GPS track down to ~250 points so the map render stays fast
+// and the post payload stays under reasonable size limits. Preserves
+// start, end, and evenly-distributed intermediate points.
+function decimateGpsTrack(track, target = 250) {
+  if (!Array.isArray(track) || track.length <= target) return track || [];
+  const step = track.length / target;
+  const out = [];
+  for (let i = 0; i < target - 1; i++) {
+    const idx = Math.floor(i * step);
+    const p = track[idx];
+    out.push({ lat: p.lat, lng: p.lng, timestamp_ms: p.timestamp_ms });
+  }
+  // Always include the final point so the route ends correctly
+  const last = track[track.length - 1];
+  out.push({ lat: last.lat, lng: last.lng, timestamp_ms: last.timestamp_ms });
+  return out;
+}
+
+// Build a display-safe snapshot of the activity for embedding in a post.
+// Only include fields needed to render the post card — never include
+// internal IDs, owner emails, or any field not directly shown to viewers.
+function buildSnapshot(kind, item) {
+  if (!item) return null;
+  switch (kind) {
+    case 'workout':
+      return {
+        regimen_name: item.regimen_name || null,
+        date: item.date || null,
+        duration_minutes: item.duration_minutes || null,
+        exercises: (item.exercises || []).map(e => ({
+          exercise_name: e.exercise_name || e.name || null,
+          sets: (e.sets || []).map(s => ({
+            weight: s.weight || 0,
+            reps: s.reps || 0,
+          })),
+        })),
+      };
+    case 'cardio':
+      return {
+        type: item.type || 'cardio',
+        mode: item.mode || 'manual',
+        date: item.date || null,
+        duration_seconds: item.duration_seconds || null,
+        distance_meters: item.distance_meters || null,
+        pace_seconds_per_km: item.pace_seconds_per_km || null,
+        avg_speed_kmh: item.avg_speed_kmh || null,
+        calories: item.calories || null,
+        elevation_gain_m: item.elevation_gain_m || null,
+        incline_percent: item.incline_percent ?? null,
+        gps_track: decimateGpsTrack(item.gps_track),
+      };
+    case 'meal':
+      return {
+        food_name: item.food_name || null,
+        meal_type: item.meal_type || null,
+        calories: item.calories || null,
+        protein_g: item.protein_g || null,
+        carbs_g: item.carbs_g || null,
+        fat_g: item.fat_g || null,
+        servings: item.servings || null,
+      };
+    case 'goal':
+      return {
+        exercise_name: item.exercise_name || null,
+        target_weight: item.target_weight || null,
+        target_reps: item.target_reps || null,
+        achieved_weight: item.achieved_weight || null,
+        achieved_reps: item.achieved_reps || null,
+        completed_date: item.completed_date || item.updated_date || null,
+      };
+    case 'achievement':
+      return {
+        achievement_id: item.achievement_id || null,
+        name: item.name || null,
+        description: item.description || null,
+        icon: item.icon || null,
+        unlocked_date: item.unlocked_date || null,
+        xp_reward: item.xp_reward || null,
+      };
+    case 'regimen':
+      return {
+        name: item.name || null,
+        description: item.description || null,
+        exercises: (item.exercises || []).map(e => ({
+          exercise_name: e.exercise_name || e.name || null,
+          target_sets: e.target_sets || null,
+          target_reps: e.target_reps || null,
+        })),
+      };
+    case 'stats':
+      return {
+        level: item.level || null,
+        total_xp: item.total_xp || null,
+        total_volume_lbs: item.total_volume_lbs || null,
+        total_distance_meters: item.total_distance_meters || null,
+        achievements_unlocked_count: item.achievements_unlocked_count || null,
+      };
+    case 'progressPhoto':
+      // The image_url field on the post already carries the photo;
+      // we only need the caption metadata in the snapshot.
+      return {
+        workout_name: item.workoutName || null,
+        taken_at: item.takenAt || null,
+      };
+    default:
+      return null;
+  }
+}
+
+const summarize = {
+  workout: (w) => {
+    const exCount = (w.exercises || []).length;
+    const setCount = (w.exercises || []).reduce((s, e) => s + (e.sets?.length || 0), 0);
+    const date = w.date ? format(parseISO(w.date), 'MMM d') : '';
+    return `${w.regimen_name || 'Freestyle'} · ${exCount} exercise${exCount === 1 ? '' : 's'} · ${setCount} set${setCount === 1 ? '' : 's'}${date ? ' · ' + date : ''}`;
+  },
+  cardio: (c, typeLabel) => {
+    const km = c.distance_meters ? (c.distance_meters / 1000).toFixed(2) : null;
+    const mins = c.duration_seconds ? Math.round(c.duration_seconds / 60) : null;
+    const parts = [typeLabel || (c.type || 'cardio')];
+    if (km) parts.push(`${km} km`);
+    if (mins) parts.push(`${mins} min`);
+    return parts.join(' · ');
+  },
+  meal: (m) => {
+    const cal = m.calories != null ? `${Math.round(m.calories)} kcal` : '';
+    return [m.food_name, cal].filter(Boolean).join(' · ');
+  },
+  goal: (g) => g.exercise_name || g.goal_type || 'Goal',
+  achievement: (a) => a.name || a.achievement_id || 'Achievement',
+  regimen: (r) => `${r.name} · ${(r.exercises || []).length} exercise${(r.exercises || []).length === 1 ? '' : 's'}`,
+  progressPhoto: (p) => {
+    const date = p.takenAt ? format(parseISO(p.takenAt), 'MMM d') : '';
+    return [p.workoutName, date].filter(Boolean).join(' · ') || 'Progress photo';
+  },
+  stats: (s) => {
+    const parts = [];
+    if (s.level) parts.push(`Level ${s.level}`);
+    if (s.total_volume_lbs) parts.push(`${Math.round(s.total_volume_lbs).toLocaleString()} lbs lifted`);
+    if (s.total_distance_meters) parts.push(`${(s.total_distance_meters / 1000).toFixed(1)} km logged`);
+    return parts.join(' · ') || 'Stats snapshot';
+  },
+};
+
+const ICONS = {
+  status: MessageSquare,
+  workout: Dumbbell, cardio: Activity, meal: Apple,
+  goal: Target, achievement: Trophy, regimen: ListChecks,
+  progressPhoto: ImageIcon, stats: BarChart3,
+};
+
+export default function HubComposer({ onClose }) {
+  const { t } = useLanguage();
+  const { user } = useAuth();
+  const queryClient = useQueryClient();
+
+  // Lock body scroll when composer is open
+  useEffect(() => {
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = 'unset';
+    };
+  }, []);
+
+  const [step, setStep] = useState('pick');
+  const [selected, setSelected] = useState(null);
+
+  // Body field — used for both status posts (as the post body itself)
+  // and activity-tied posts (as an optional caption). Profanity-guarded.
+  const [body, setBody] = useState('');
+  const bodyGuard = useProfanityGuard(setBody);
+
+  const [privacy, setPrivacy] = useState('public');
+  const [posting, setPosting] = useState(false);
+
+  // ── Load shareable activities ──
+  const { data: recentWorkouts = [] } = useQuery({
+    queryKey: ['composer.workouts', user?.email],
+    queryFn: () => workouts.list(user.email, 10),
+    enabled: !!user?.email,
+  });
+  const { data: recentCardio = [] } = useQuery({
+    queryKey: ['composer.cardio', user?.email],
+    queryFn: () => cardio.list(user.email, 10),
+    enabled: !!user?.email,
+  });
+  const { data: recentMeals = [] } = useQuery({
+    queryKey: ['composer.meals', user?.email],
+    queryFn: () => nutrition.list(user.email, 10),
+    enabled: !!user?.email,
+  });
+  const { data: completedGoals = [] } = useQuery({
+    queryKey: ['composer.goals', user?.email],
+    queryFn: async () => {
+      const all = await goals.list(user.email);
+      return all.filter(g => g.status === 'completed').slice(0, 10);
+    },
+    enabled: !!user?.email,
+  });
+  const { data: unlockedAchievements = [] } = useQuery({
+    queryKey: ['composer.achievements', user?.email],
+    queryFn: async () => {
+      // achievements.list() already applies filterAfterReset internally
+      const all = await achievements.list(user.email);
+      return all.filter(a => a.unlocked).slice(0, 10);
+    },
+    enabled: !!user?.email,
+  });
+  const { data: myRegimens = [] } = useQuery({
+    queryKey: ['composer.regimens', user?.email],
+    queryFn: () => regimens.list(user.email),
+    enabled: !!user?.email,
+  });
+
+  const [progressPhotos, setProgressPhotos] = useState([]);
+  useEffect(() => {
+    if (step === 'pick') {
+      try { setProgressPhotos(loadProgressPhotos().slice(0, 12)); } catch {}
+    }
+  }, [step]);
+
+  const statsSnapshot = {
+    level: user?.level,
+    total_volume_lbs: user?.total_volume_lbs,
+    total_distance_meters: user?.total_distance_meters,
+    achievements_unlocked_count: user?.achievements_unlocked_count,
+  };
+
+  const handlePick = (kind, item = null) => {
+    setSelected({
+      kind,
+      item,
+      summary: kind === 'status' ? null
+             : kind === 'cardio' ? summarize.cardio(item, t(`cardio.type.${item?.type || 'cardio'}`))
+             : summarize[kind](item),
+    });
+    setBody('');
+    setStep(kind === 'status' ? 'status_compose' : 'compose');
+  };
+
+  // ── Posting ──
+  // Defensive submit-time profanity check — even if onChange interception
+  // was bypassed (paste, autofill, programmatic injection), this catches it.
+  const handlePost = async () => {
+    if (!selected) return;
+
+    // Status posts: body is mandatory and is the entire post.
+    if (selected.kind === 'status') {
+      if (!body.trim()) {
+        toast.error(t('hub.composer.statusEmpty'));
+        return;
+      }
+      if (containsProfanity(body)) {
+        toast.error(t('hub.composer.profanityError'));
+        return;
+      }
+    } else {
+      // Activity-tied posts: caption is optional but still filtered.
+      if (body && containsProfanity(body)) {
+        toast.error(t('hub.composer.profanityError'));
+        return;
+      }
+    }
+
+    setPosting(true);
+    try {
+      let imageUrl = null;
+
+      if (selected.kind === 'progressPhoto' && selected.item?.dataUrl) {
+        try {
+          const blob = await (await fetch(selected.item.dataUrl)).blob();
+          const file = new File([blob], `progress-${Date.now()}.jpg`, { type: blob.type || 'image/jpeg' });
+          const result = await base44.integrations.Core.UploadFile({ file });
+          imageUrl = result?.file_url || null;
+        } catch (e) {
+          console.error('Photo upload failed', e);
+          toast.error(t('hub.composer.postError'));
+          setPosting(false);
+          return;
+        }
+      }
+
+      const postTypeMap = {
+        status: 'status',
+        workout: 'workout',
+        cardio: 'cardio',
+        meal: 'meal',
+        goal: 'goal_completed',
+        achievement: 'achievement',
+        regimen: 'regimen',
+        progressPhoto: 'progress_photo',
+        stats: 'stats',
+      };
+
+      // Body construction:
+      //   Status:        body field = whole post content
+      //   Activity-tied: body field = caption (if any) OR auto-generated summary
+      let finalBody;
+      if (selected.kind === 'status') {
+        finalBody = body.trim();
+      } else {
+        const autoBody = t(`hub.share.body.${selected.kind}`).replace('{summary}', selected.summary);
+        finalBody = body.trim() || autoBody;
+      }
+
+      // Build snapshot for activity-linked posts
+      const snapshot = selected.kind === 'status'
+        ? null
+        : buildSnapshot(selected.kind, selected.item);
+
+      await hubPosts.create({
+        author_email: user.email,
+        author_name: user.username
+          ? `@${user.username}`
+          : (user.email?.split('@')[0] || 'Athlete'),
+        author_avatar_url: user.avatar_url || null,
+        post_type: postTypeMap[selected.kind] || 'status',
+        body: finalBody,
+        image_url: imageUrl,
+        privacy,
+        linked_entity_type: selected.kind === 'status' ? null : selected.kind,
+        linked_entity_id: selected.kind === 'status' ? null : (selected.item?.id || null),
+        linked_entity_snapshot: snapshot,
+        like_count: 0,
+        dislike_count: 0,
+        comment_count: 0,
+      });
+
+      queryClient.invalidateQueries({ queryKey: ['hubFeed'] });
+      toast.success(t('hub.composer.posted'));
+      onClose();
+    } catch (err) {
+      console.error(err);
+      toast.error(t('hub.composer.postError'));
+    } finally {
+      setPosting(false);
+    }
+  };
+
+  // ── Rendering: pick step ──
+  const totalActivity =
+    recentWorkouts.length + recentCardio.length + recentMeals.length +
+    completedGoals.length + unlockedAchievements.length + myRegimens.length +
+    progressPhotos.length;
+
+  const renderPicker = () => (
+    <div className="flex-1 overflow-y-auto px-4 pb-4">
+      <div className="space-y-3">
+        {/* Status — always open, pinned at top */}
+        <Section title={t('hub.share.section.status')} alwaysOpen>
+          <PickCard
+            kind="status"
+            onClick={() => handlePick('status')}
+            title={t('hub.share.status')}
+            subtitle={t('hub.share.statusDesc')}
+            highlight
+          />
+        </Section>
+
+        {totalActivity === 0 && (
+          <EmptyState
+            title={t('hub.composer.noActivity')}
+            desc={t('hub.composer.noActivityDesc')}
+          />
+        )}
+
+        {recentWorkouts.length > 0 && (
+          <Section title={t('hub.share.workout')} count={recentWorkouts.length}>
+            {recentWorkouts.map(w => (
+              <PickCard key={w.id} kind="workout" onClick={() => handlePick('workout', w)}
+                title={w.regimen_name || 'Freestyle workout'}
+                subtitle={summarize.workout(w)} />
+            ))}
+          </Section>
+        )}
+
+        {recentCardio.length > 0 && (
+          <Section title={t('hub.share.cardio')} count={recentCardio.length}>
+            {recentCardio.map(c => (
+              <PickCard
+                key={c.id}
+                kind="cardio"
+                onClick={() => handlePick('cardio', c)}
+                title={t(`cardio.type.${c.type || 'cardio'}`)}
+                subtitle={summarize.cardio(c, t(`cardio.type.${c.type || 'cardio'}`))}
+              />
+            ))}
+          </Section>
+        )}
+
+        {recentMeals.length > 0 && (
+          <Section title={t('hub.share.meal')} count={recentMeals.length}>
+            {recentMeals.map(m => (
+              <PickCard key={m.id} kind="meal" onClick={() => handlePick('meal', m)}
+                title={m.food_name}
+                subtitle={summarize.meal(m)} />
+            ))}
+          </Section>
+        )}
+
+        {completedGoals.length > 0 && (
+          <Section title={t('hub.share.goal')} count={completedGoals.length}>
+            {completedGoals.map(g => (
+              <PickCard key={g.id} kind="goal" onClick={() => handlePick('goal', g)}
+                title={g.exercise_name || 'Goal'}
+                subtitle={summarize.goal(g)} />
+            ))}
+          </Section>
+        )}
+
+        {unlockedAchievements.length > 0 && (
+          <Section title={t('hub.share.achievement')} count={unlockedAchievements.length}>
+            {unlockedAchievements.map(a => (
+              <PickCard key={a.id} kind="achievement" onClick={() => handlePick('achievement', a)}
+                title={a.name || a.achievement_id || 'Achievement'}
+                subtitle={a.unlocked_date ? format(parseISO(a.unlocked_date), 'MMM d, yyyy') : ''} />
+            ))}
+          </Section>
+        )}
+
+        {myRegimens.length > 0 && (
+          <Section title={t('hub.share.regimen')} count={myRegimens.length}>
+            {myRegimens.map(r => (
+              <PickCard key={r.id} kind="regimen" onClick={() => handlePick('regimen', r)}
+                title={r.name}
+                subtitle={summarize.regimen(r)} />
+            ))}
+          </Section>
+        )}
+
+        {progressPhotos.length > 0 && (
+          <Section title={t('hub.share.section.progressPhotos')} count={progressPhotos.length}>
+            <div className="grid grid-cols-3 gap-2">
+              {progressPhotos.map(p => (
+                <button key={p.id}
+                  onClick={() => handlePick('progressPhoto', p)}
+                  className="relative aspect-square rounded-lg overflow-hidden border-2 border-transparent hover:border-primary transition-colors">
+                  <img src={p.dataUrl} alt="" className="w-full h-full object-cover" />
+                </button>
+              ))}
+            </div>
+          </Section>
+        )}
+
+        <Section title={t('hub.share.section.stats')}>
+          <PickCard kind="stats" onClick={() => handlePick('stats', statsSnapshot)}
+            title={t('hub.share.stats')}
+            subtitle={summarize.stats(statsSnapshot)} />
+        </Section>
+      </div>
+    </div>
+  );
+
+  // ── Rendering: status compose step ──
+  const renderStatusCompose = () => (
+    <div className="flex-1 flex flex-col px-4 pb-4">
+      <div className="mb-3 flex items-center gap-2 text-xs text-muted-foreground">
+        <MessageSquare className="w-3.5 h-3.5" />
+        {t('hub.share.statusDesc')}
+      </div>
+      <textarea
+        value={body}
+        onChange={(e) => bodyGuard.handleChange(e.target.value)}
+        placeholder={t('hub.composer.statusPlaceholder')}
+        maxLength={500}
+        rows={6}
+        autoFocus
+        className="w-full p-3 bg-secondary/40 border border-border rounded-lg text-sm resize-none focus:outline-none focus:ring-2 focus:ring-primary/40"
+      />
+      <div className="text-xs text-muted-foreground text-right mt-1 mb-3">
+        {body.length}/500
+      </div>
+      {renderPrivacyButtons()}
+    </div>
+  );
+
+  // ── Rendering: activity-tied compose step ──
+  const renderCompose = () => (
+    <div className="flex-1 flex flex-col px-4 pb-4">
+      <div className="mb-3 p-3 rounded-xl bg-secondary/50 border border-border">
+        <div className="flex items-start gap-3">
+          {selected.kind === 'progressPhoto' && selected.item?.dataUrl ? (
+            <img src={selected.item.dataUrl} alt=""
+              className="w-12 h-12 rounded-lg object-cover shrink-0" />
+          ) : (
+            <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
+              {(() => {
+                const Icon = ICONS[selected.kind] || BarChart3;
+                return <Icon className="w-5 h-5 text-primary" />;
+              })()}
+            </div>
+          )}
+          <div className="flex-1 min-w-0">
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold">
+              {t(`hub.share.${selected.kind}`)}
+            </p>
+            <p className="text-sm font-medium leading-tight mt-0.5 line-clamp-2">
+              {selected.summary}
+            </p>
+          </div>
+        </div>
+      </div>
+      <textarea
+        value={body}
+        onChange={(e) => bodyGuard.handleChange(e.target.value)}
+        placeholder={t('hub.composer.captionPlaceholder')}
+        maxLength={500}
+        rows={3}
+        className="w-full p-3 bg-secondary/40 border border-border rounded-lg text-sm resize-none focus:outline-none focus:ring-2 focus:ring-primary/40"
+      />
+      <div className="text-xs text-muted-foreground text-right mt-1 mb-3">
+        {body.length}/500
+      </div>
+      {renderPrivacyButtons()}
+    </div>
+  );
+
+  const renderPrivacyButtons = () => (
+    <>
+      <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2 block">
+        {t('hub.composer.privacyLabel')}
+      </label>
+      <div className="flex gap-2 mb-1">
+        <button onClick={() => setPrivacy('public')}
+          className={`flex-1 flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg border text-sm font-medium transition-colors ${
+            privacy === 'public'
+              ? 'border-primary bg-primary/5 text-primary'
+              : 'border-border text-muted-foreground hover:bg-secondary'
+          }`}>
+          <Globe2 className="w-4 h-4" /> {t('hub.privacy.public')}
+        </button>
+        <button onClick={() => setPrivacy('followers')}
+          className={`flex-1 flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg border text-sm font-medium transition-colors ${
+            privacy === 'followers'
+              ? 'border-primary bg-primary/5 text-primary'
+              : 'border-border text-muted-foreground hover:bg-secondary'
+          }`}>
+          <Lock className="w-4 h-4" /> {t('hub.privacy.followers')}
+        </button>
+      </div>
+    </>
+  );
+
+  const onPickStep = step === 'pick';
+  const isStatusStep = step === 'status_compose';
+
+  return (
+    <AnimatePresence>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
+        style={{ background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)' }}
+        onClick={onClose}
+      >
+        <motion.div
+          initial={{ y: 60, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+          exit={{ y: 60, opacity: 0 }}
+          transition={{ type: 'spring', stiffness: 340, damping: 30 }}
+          onClick={(e) => e.stopPropagation()}
+          className="w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl flex flex-col bg-card border border-border max-h-[90vh] px-6"
+        >
+          <div className="flex items-center gap-2 px-4 pt-4 pb-3 shrink-0 border-b border-border">
+            {!onPickStep && (
+              <button onClick={() => setStep('pick')} className="p-1.5 rounded-md hover:bg-secondary">
+                <ArrowLeft className="w-4 h-4" />
+              </button>
+            )}
+            <div className="flex-1">
+              <h2 className="font-heading font-bold text-lg leading-tight">
+                {onPickStep
+                  ? t('hub.composer.pickActivity')
+                  : isStatusStep
+                  ? t('hub.composer.statusTitle')
+                  : t('hub.composer.title')}
+              </h2>
+              {onPickStep && (
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {t('hub.composer.pickActivityDesc')}
+                </p>
+              )}
+            </div>
+            <button onClick={onClose} className="p-1.5 rounded-full hover:bg-secondary shrink-0">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          {onPickStep
+            ? renderPicker()
+            : isStatusStep
+            ? renderStatusCompose()
+            : renderCompose()}
+
+          {!onPickStep && (
+            <div className="border-t border-border px-4 py-3 flex items-center justify-end gap-2 shrink-0">
+              <Button onClick={handlePost} disabled={posting} className="gap-2">
+                {posting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                {posting ? t('hub.composer.posting') : t('hub.composer.post')}
+              </Button>
+            </div>
+          )}
+
+          <ProfanityWarningDialog open={bodyGuard.open} onContinue={bodyGuard.onContinue} />
+        </motion.div>
+      </motion.div>
+    </AnimatePresence>
+  );
+}
+
+function Section({ title, count, defaultOpen = false, alwaysOpen = false, children }) {
+  const [open, setOpen] = useState(defaultOpen || alwaysOpen);
+
+  // alwaysOpen sections are non-interactive — render flat with no toggle.
+  if (alwaysOpen) {
+    return (
+      <div>
+        <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mt-4 mb-2 px-2">
+          {title}
+        </h3>
+        <div className="space-y-1.5">{children}</div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between gap-2 px-2 py-1.5 rounded-md hover:bg-secondary/40 transition-colors"
+        aria-expanded={open}
+      >
+        <div className="flex items-center gap-2 min-w-0">
+          <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+            {title}
+          </h3>
+          {typeof count === 'number' && count > 0 && (
+            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-secondary text-muted-foreground">
+              {count}
+            </span>
+          )}
+        </div>
+        <motion.div
+          animate={{ rotate: open ? 180 : 0 }}
+          transition={{ duration: 0.18 }}
+          className="text-muted-foreground shrink-0"
+        >
+          <ChevronDown className="w-4 h-4" />
+        </motion.div>
+      </button>
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            key="content"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.22, ease: 'easeOut' }}
+            className="overflow-hidden"
+          >
+            <div className="space-y-1.5 pt-2 pb-1">{children}</div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+function PickCard({ kind, title, subtitle, onClick, highlight = false }) {
+  const Icon = ICONS[kind] || BarChart3;
+  return (
+    <motion.button
+      whileTap={{ scale: 0.98 }}
+      onClick={onClick}
+      className={`w-full flex items-center gap-3 p-3 rounded-xl border transition-colors text-left ${
+        highlight
+          ? 'bg-primary/5 border-primary/30 hover:bg-primary/10 hover:border-primary'
+          : 'bg-card border-border hover:bg-secondary/40 hover:border-primary/40'
+      }`}
+    >
+      <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
+        highlight ? 'bg-primary text-primary-foreground' : 'bg-primary/10 text-primary'
+      }`}>
+        <Icon className="w-4 h-4" />
+      </div>
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-bold leading-tight truncate">{title}</p>
+        {subtitle && (
+          <p className="text-xs text-muted-foreground leading-tight mt-0.5 truncate">
+            {subtitle}
+          </p>
+        )}
+      </div>
+    </motion.button>
+  );
+}
+
+function EmptyState({ title, desc }) {
+  return (
+    <div className="text-center py-8 px-2">
+      <div className="w-14 h-14 rounded-full bg-secondary mx-auto flex items-center justify-center mb-3">
+        <BarChart3 className="w-6 h-6 text-muted-foreground" />
+      </div>
+      <p className="font-heading font-bold text-base">{title}</p>
+      <p className="text-sm text-muted-foreground mt-1">{desc}</p>
+    </div>
+  );
+}

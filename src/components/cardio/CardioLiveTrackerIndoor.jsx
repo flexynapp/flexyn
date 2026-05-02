@@ -1,0 +1,416 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { format } from 'date-fns';
+import { toast } from 'sonner';
+import { useQueryClient } from '@tanstack/react-query';
+import { Card } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import {
+  AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogAction, AlertDialogCancel
+} from '@/components/ui/alert-dialog';
+import { Play, Pause, Square, Save, X } from 'lucide-react';
+import { useLanguage } from '@/lib/LanguageContext';
+import { useAuth } from '@/lib/AuthContext';
+import { useDistanceUnit } from '@/lib/DistanceUnitContext';
+import {
+  formatDistance, formatPace, toMeters,
+  speedKmhFrom, paceSecPerKmFrom,
+} from '@/lib/distanceUnit';
+import { estimateCalories, userWeightKg } from '@/lib/cardioCalories';
+import { getMaxRealisticCalories } from '@/lib/cardioLimits';
+import { base44 } from '@/api/base44Client';
+import { snapshot, readSnapshot, clearSnapshot } from '@/lib/cardioSession';
+import { detectNewPRs, PR_LABELS } from '@/lib/cardioPRs';
+
+export default function CardioLiveTrackerIndoor({ mode, env, onCancel, onSaved, userProfile = {} }) {
+  const { t } = useLanguage();
+  const { user } = useAuth();
+  const { distanceUnit } = useDistanceUnit();
+  const queryClient = useQueryClient();
+
+  const [status, setStatus] = useState('idle');
+  const [, forceTick] = useState(0);
+  const [distanceInputUnits, setDistanceInputUnits] = useState('');
+  const [incline, setIncline] = useState(env === 'treadmill' ? 0 : null);
+  const [confirmDiscardOpen, setConfirmDiscardOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const startedAtRef = useRef(null);
+  const pauseStartedAtRef = useRef(null);
+  const pausedTotalMsRef = useRef(0);
+  const tickIdRef = useRef(null);
+  const wakeLockRef = useRef(null);
+
+  // ── Restore snapshot on mount ──
+  useEffect(() => {
+    const snap = readSnapshot();
+    if (!snap || snap.kind !== 'indoor' || snap.mode !== mode || snap.env !== env) return;
+    startedAtRef.current = snap.startedAt;
+    pausedTotalMsRef.current = snap.pausedTotalMs || 0;
+    if (snap.pauseStartedAt) pauseStartedAtRef.current = snap.pauseStartedAt;
+    if (snap.distanceInputUnits != null) setDistanceInputUnits(snap.distanceInputUnits);
+    if (snap.incline != null) setIncline(snap.incline);
+    setStatus('paused');
+    toast.success(t('cardio.recover.recovered'));
+    forceTick(n => n + 1);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── Auto-snapshot every 10s while active ──
+  useEffect(() => {
+    if (status !== 'tracking' && status !== 'paused') return;
+    const id = setInterval(() => {
+      snapshot({
+        kind: 'indoor',
+        mode,
+        env,
+        startedAt: startedAtRef.current,
+        pausedTotalMs: pausedTotalMsRef.current,
+        pauseStartedAt: status === 'paused' ? pauseStartedAtRef.current : null,
+        distanceInputUnits,
+        incline,
+        status,
+        savedAt: Date.now(),
+      });
+    }, 10000);
+    return () => clearInterval(id);
+  }, [status, mode, env, distanceInputUnits, incline]);
+
+  // ── Derived ──
+  const distanceMeters = distanceInputUnits
+    ? toMeters(distanceUnit, Number(distanceInputUnits) || 0)
+    : 0;
+
+  const elapsedMs = startedAtRef.current
+    ? (status === 'paused'
+        ? (pauseStartedAtRef.current - startedAtRef.current - pausedTotalMsRef.current)
+        : (Date.now() - startedAtRef.current - pausedTotalMsRef.current))
+    : 0;
+  const elapsedSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
+  const pace = paceSecPerKmFrom(distanceMeters, elapsedSeconds);
+  const speedKmh = speedKmhFrom(distanceMeters, elapsedSeconds);
+  const calories = estimateCalories({
+    type: `${mode}_${env}`,
+    durationSeconds: elapsedSeconds,
+    distanceMeters,
+    inclinePercent: incline ?? 0,
+    weightKg: userWeightKg(user),
+  });
+
+  // ── Start ──
+  const start = () => {
+    setStatus('tracking');
+    startedAtRef.current = Date.now();
+    pausedTotalMsRef.current = 0;
+    tickIdRef.current = setInterval(() => forceTick(n => n + 1), 500);
+  };
+
+  // ── Pause ──
+  const pause = () => {
+    if (status !== 'tracking') return;
+    pauseStartedAtRef.current = Date.now();
+    setStatus('paused');
+    if (tickIdRef.current) { clearInterval(tickIdRef.current); tickIdRef.current = null; }
+  };
+
+  // ── Resume ──
+  const resume = () => {
+    if (status !== 'paused') return;
+    pausedTotalMsRef.current += Date.now() - pauseStartedAtRef.current;
+    pauseStartedAtRef.current = null;
+    setStatus('tracking');
+    tickIdRef.current = setInterval(() => forceTick(n => n + 1), 500);
+  };
+
+  // ── Finish ──
+  const finish = () => {
+    if (tickIdRef.current) { clearInterval(tickIdRef.current); tickIdRef.current = null; }
+    setStatus('finished');
+  };
+
+  // ── Discard ──
+  const discardAndClose = () => {
+    if (tickIdRef.current) clearInterval(tickIdRef.current);
+    clearSnapshot();
+    onCancel();
+  };
+
+  // ── Save ──
+  const save = async () => {
+    setSaving(true);
+    try {
+      const finalCalories = estimateCalories({
+        type: `${mode}_${env}`,
+        durationSeconds: elapsedSeconds,
+        distanceMeters,
+        inclinePercent: incline ?? 0,
+        weightKg: userWeightKg(user),
+      });
+      const cappedCalories = Math.min(
+        finalCalories,
+        getMaxRealisticCalories(elapsedSeconds, userProfile)
+      );
+      const payload = {
+        date: format(new Date(startedAtRef.current), 'yyyy-MM-dd'),
+        type: `${mode}_${env}`,
+        mode: 'live',
+        duration_seconds: elapsedSeconds,
+        distance_meters: distanceMeters,
+        pace_seconds_per_km: paceSecPerKmFrom(distanceMeters, elapsedSeconds),
+        avg_speed_kmh: speedKmhFrom(distanceMeters, elapsedSeconds),
+        calories: cappedCalories,
+        incline_percent: env === 'treadmill' ? (incline ?? 0) : null,
+        elevation_gain_m: null,
+        notes: null,
+        gps_track: [],
+      };
+      const createdLog = await base44.entities.CardioLog.create(payload);
+      clearSnapshot();
+      // Denormalise total distance on the User record for the distance leaderboard.
+      if (Number(payload.distance_meters) > 0) {
+        try {
+          const me = await base44.auth.me();
+          const prev = Number(me?.total_distance_meters) || 0;
+          await base44.auth.updateMe({ total_distance_meters: prev + Number(payload.distance_meters) });
+        } catch { /* non-blocking */ }
+      }
+      // Fire achievement check (non-blocking)
+      base44.functions.invoke('updateUserXpAndAchievements', {
+        xp_gained: 0,
+        action_type: 'cardio_completed',
+        action_data: {
+          duration_seconds: payload.duration_seconds,
+          distance_meters: payload.distance_meters,
+          calories: payload.calories,
+        },
+      }).catch(() => {});
+      // Check for PRs
+      const prior = await base44.entities.CardioLog.filter(
+        { created_by: user.email }, '-date', 1000
+      );
+      const priorOnly = prior.filter(l => l.id !== createdLog.id);
+      const prs = detectNewPRs(createdLog, priorOnly);
+      for (const pr of prs) {
+        const label = PR_LABELS[pr.distance];
+        toast.success(t('cardio.pr.title').replace('{label}', label), {
+          duration: 6000,
+        });
+        try { navigator.vibrate?.([100, 60, 100]); } catch {}
+      }
+      queryClient.invalidateQueries({ queryKey: ['cardioLogs', user?.email] });
+      queryClient.invalidateQueries({ queryKey: ['userProfile', user?.email] });
+      toast.success(t('cardio.saved'));
+      onSaved();
+    } catch {
+      toast.error(t('cardio.saveFailed'));
+      setSaving(false);
+    }
+  };
+
+  // ── Wake lock ──
+  useEffect(() => {
+    if (status !== 'tracking') return;
+    let lock = null;
+    (async () => {
+      try {
+        if ('wakeLock' in navigator) {
+          lock = await navigator.wakeLock.request('screen');
+          wakeLockRef.current = lock;
+        }
+      } catch {}
+    })();
+    return () => {
+      try { lock?.release(); } catch {}
+      wakeLockRef.current = null;
+    };
+  }, [status]);
+
+  // ── Cleanup on unmount ──
+  useEffect(() => () => {
+    if (tickIdRef.current) clearInterval(tickIdRef.current);
+  }, []);
+
+  // ── Timer string ──
+  const hh = Math.floor(elapsedSeconds / 3600);
+  const mm = Math.floor((elapsedSeconds % 3600) / 60);
+  const ss = elapsedSeconds % 60;
+  const timerStr = hh > 0
+    ? `${hh}:${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`
+    : `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
+
+  const speedDisplay = distanceUnit === 'mi'
+    ? `${(speedKmh / 1.609344).toFixed(1)} mph`
+    : `${speedKmh.toFixed(1)} km/h`;
+
+  const activityLabel = t(`cardio.type.${mode}_${env}`);
+
+  // ════════════════ RENDER ════════════════
+
+  // IDLE
+  if (status === 'idle') {
+    return (
+      <Card className="p-8 text-center">
+        <div className="w-20 h-20 rounded-full bg-primary/10 flex items-center justify-center mx-auto mb-6">
+          <Play className="w-10 h-10 text-primary ml-1" />
+        </div>
+        <h2 className="font-heading text-2xl font-bold mb-2">{activityLabel}</h2>
+        <p className="text-sm text-muted-foreground mb-8">
+          {env === 'treadmill' ? t('cardio.env.treadmill') : t('cardio.env.stationary')}
+        </p>
+        <Button className="w-full h-14 font-heading font-bold text-base" onClick={start}>
+          <Play className="w-5 h-5 mr-2" />
+          {t('cardio.live.start')}
+        </Button>
+      </Card>
+    );
+  }
+
+  // FINISHED
+  if (status === 'finished') {
+    return (
+      <Card className="p-6">
+        <h2 className="font-heading text-2xl font-bold text-center mb-6">{t('cardio.live.summaryTitle')}</h2>
+        <div className="text-center mb-6">
+          <p className="font-heading text-5xl font-bold tracking-tight">{timerStr}</p>
+          <p className="font-heading text-3xl font-semibold mt-2 text-primary">
+            {formatDistance(distanceMeters, distanceUnit, 2)}
+          </p>
+        </div>
+        <div className="grid grid-cols-3 gap-3 mb-8">
+          <StatCard label={t('cardio.field.avgPace')} value={formatPace(pace, distanceUnit)} />
+          <StatCard label={t('cardio.field.avgSpeed')} value={speedDisplay} />
+          <StatCard label={t('cardio.field.calories')} value={`${Math.round(calories)} kcal`} />
+        </div>
+        {env === 'treadmill' && incline != null && (
+          <p className="text-center text-sm text-muted-foreground mb-6">
+            {t('cardio.field.incline')}: {incline}%
+          </p>
+        )}
+        <div className="flex gap-3">
+          <Button className="flex-1 h-12 font-heading font-bold" onClick={save} disabled={saving}>
+            <Save className="w-5 h-5 mr-2" />
+            {saving ? t('cardio.saving') : t('cardio.save')}
+          </Button>
+          <Button variant="outline" className="flex-1 h-12" onClick={onCancel} disabled={saving}>
+            <X className="w-4 h-4 mr-2" />
+            {t('cardio.live.discard')}
+          </Button>
+        </div>
+      </Card>
+    );
+  }
+
+  // TRACKING / PAUSED
+  return (
+    <>
+      <Card className="p-5 relative">
+        {/* Discard button */}
+        <button
+          className="absolute top-3 right-3 p-1.5 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+          onClick={() => setConfirmDiscardOpen(true)}
+        >
+          <X className="w-4 h-4" />
+        </button>
+
+        {/* Timer */}
+        <div className="text-center mb-4 pt-2">
+          <p className="font-heading text-5xl font-bold tracking-tight">{timerStr}</p>
+        </div>
+
+        {/* Distance input */}
+        <div className="mb-4">
+          <label className="text-xs font-medium text-muted-foreground mb-1 block">
+            {t('cardio.live.tapDistance')}
+          </label>
+          <div className="flex items-center gap-2">
+            <Input
+              type="number"
+              min="0"
+              step="0.01"
+              inputMode="decimal"
+              value={distanceInputUnits}
+              onChange={e => setDistanceInputUnits(e.target.value)}
+              placeholder="0.00"
+              className="text-lg font-heading font-semibold text-center"
+            />
+            <span className="text-sm font-medium text-muted-foreground w-8 shrink-0">{distanceUnit}</span>
+          </div>
+        </div>
+
+        {/* Incline slider — treadmill only */}
+        {env === 'treadmill' && (
+          <div className="mb-4">
+            <label className="text-xs font-medium text-muted-foreground mb-1 flex items-center justify-between">
+              <span>{t('cardio.field.incline')}</span>
+              <span className="font-bold text-foreground">{incline}%</span>
+            </label>
+            <input
+              type="range"
+              min="0"
+              max="15"
+              step="0.5"
+              value={incline ?? 0}
+              onChange={e => setIncline(Number(e.target.value))}
+              className="w-full accent-primary"
+            />
+          </div>
+        )}
+
+        {/* Stats grid */}
+        <div className="grid grid-cols-3 gap-2 mb-5">
+          <StatCard label={t('cardio.field.avgPace')} value={formatPace(pace, distanceUnit)} />
+          <StatCard label={t('cardio.field.avgSpeed')} value={speedDisplay} />
+          <StatCard label={t('cardio.field.calories')} value={`${Math.round(calories)}`} small />
+        </div>
+
+        {/* Controls */}
+        <div className="flex gap-3">
+          {status === 'tracking' ? (
+            <Button variant="outline" className="flex-1 h-12 font-heading font-bold" onClick={pause}>
+              <Pause className="w-5 h-5 mr-2" />
+              {t('cardio.live.pause')}
+            </Button>
+          ) : (
+            <Button className="flex-1 h-12 font-heading font-bold" onClick={resume}>
+              <Play className="w-5 h-5 mr-2" />
+              {t('cardio.live.resume')}
+            </Button>
+          )}
+          <Button variant="destructive" className="flex-1 h-12 font-heading font-bold" onClick={finish}>
+            <Square className="w-5 h-5 mr-2" />
+            {t('cardio.live.finish')}
+          </Button>
+        </div>
+      </Card>
+
+      {/* Discard confirm */}
+      <AlertDialog open={confirmDiscardOpen} onOpenChange={setConfirmDiscardOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('cardio.live.confirmDiscard')}</AlertDialogTitle>
+            <AlertDialogDescription>{t('cardio.live.confirmDiscardDesc')}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={discardAndClose}
+            >
+              {t('cardio.live.discard')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
+  );
+}
+
+function StatCard({ label, value, small }) {
+  return (
+    <div className="bg-muted rounded-lg p-3 text-center">
+      <p className={`font-heading font-bold ${small ? 'text-lg' : 'text-xl'} leading-tight`}>{value}</p>
+      <p className="text-xs text-muted-foreground mt-0.5 leading-tight">{label}</p>
+    </div>
+  );
+}

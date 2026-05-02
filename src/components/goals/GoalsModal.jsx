@@ -1,0 +1,208 @@
+import React, { useState } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { base44 } from '@/api/base44Client';
+import { useAuth } from '@/lib/AuthContext';
+import { useLanguage } from '@/lib/LanguageContext';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
+import { Plus, Target } from 'lucide-react';
+import { toast } from 'sonner';
+import { motion, AnimatePresence } from 'framer-motion';
+import GoalForm from './GoalForm';
+import GoalsList from './GoalsList';
+
+export default function GoalsModal({ open, onClose, goals = [], logs = [], userProfile = {} }) {
+  const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [activeTab, setActiveTab] = useState('active'); // 'active' | 'completed'
+  const [tabDirection, setTabDirection] = useState(1);
+  const { t } = useLanguage();
+
+  const switchTab = (tab) => {
+    setTabDirection(tab === 'completed' ? 1 : -1);
+    setActiveTab(tab);
+  };
+  const queryClient = useQueryClient();
+  const { user } = useAuth();
+
+  const createMutation = useMutation({
+    mutationFn: (data) => base44.entities.Goal.create(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['goals', user?.email] });
+      setShowForm(false);
+      toast.success(t('goals.toast.created'));
+    },
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: ({ id, data }) => base44.entities.Goal.update(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['goals', user?.email] });
+      setShowForm(false);
+      setEditing(null);
+      toast.success(t('goals.toast.updated'));
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id) => base44.entities.Goal.delete(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['goals', user?.email] });
+      toast.success(t('goals.toast.deleted'));
+    },
+  });
+
+  const completeMutation = useMutation({
+    mutationFn: async (goalId) => {
+      const goal = goals.find(g => g.id === goalId);
+      const hasWeight = goal?.target_weight > 0;
+      const hasReps = goal?.target_reps > 0;
+      let xpReward = 0;
+      if (hasWeight && hasReps) xpReward = Math.floor(goal.target_weight * 0.5 + goal.target_reps * 3);
+      else if (hasWeight) xpReward = Math.floor(goal.target_weight * 0.75);
+      else if (hasReps) xpReward = Math.floor(goal.target_reps * 4);
+
+      // Hard cap: goal XP cannot exceed 500 regardless of targets
+      xpReward = Math.min(xpReward, 500);
+
+      if (xpReward > 0) {
+        await base44.functions.invoke('updateUserXpAndAchievements', {
+          xp_gained: xpReward,
+          action_type: 'goal_completed',
+          action_data: { goal_id: goalId, goal_name: goal?.exercise_name, xp_earned: xpReward },
+        });
+      }
+      // Snapshot the achieved values at completion time so Hub posts can
+      // display "achieved / target" rather than just the target.
+      const achievedUpdate = { status: 'completed' };
+      if (goal?.target_weight > 0) achievedUpdate.achieved_weight = goal.target_weight;
+      if (goal?.target_reps > 0) achievedUpdate.achieved_reps = goal.target_reps;
+      await base44.entities.Goal.update(goalId, achievedUpdate);
+      return xpReward;
+    },
+    onSuccess: (xpReward) => {
+      queryClient.invalidateQueries({ queryKey: ['goals', user?.email] });
+      queryClient.invalidateQueries({ queryKey: ['userProfile', user?.email] });
+      queryClient.invalidateQueries({ queryKey: ['achievements', user?.email] });
+      toast.success(t('goals.toast.completed').replace('{xp}', xpReward));
+    },
+  });
+
+  const handleSubmit = (data) => {
+    if (editing) {
+      updateMutation.mutate({ id: editing.id, data });
+    } else {
+      createMutation.mutate(data);
+    }
+  };
+
+  const closeForm = () => {
+    setShowForm(false);
+    setEditing(null);
+  };
+
+  const activeGoals = goals.filter(g => g.status === 'active');
+  const completedGoals = goals.filter(g => g.status === 'completed');
+
+  return (
+    <Dialog open={open} onOpenChange={onClose}>
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="font-heading text-xl">{t('goals.title')}</DialogTitle>
+        </DialogHeader>
+
+        {!showForm ? (
+          <>
+            {/* Tab buttons */}
+            <div className="flex gap-2 border-b border-border">
+              <button
+                onClick={() => switchTab('active')}
+                className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                  activeTab === 'active'
+                    ? 'border-primary text-foreground'
+                    : 'border-transparent text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                {t('goals.active')}
+              </button>
+              {completedGoals.length > 0 && (
+                <button
+                  onClick={() => switchTab('completed')}
+                  className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                    activeTab === 'completed'
+                      ? 'border-primary text-foreground'
+                      : 'border-transparent text-muted-foreground hover:text-foreground'
+                  }`}
+                >
+                  {t('goals.completed')}
+                </button>
+              )}
+            </div>
+
+            <div className="overflow-hidden mt-4">
+              <AnimatePresence mode="wait" custom={tabDirection}>
+                {activeTab === 'active' ? (
+                  <motion.div
+                    key="active"
+                    custom={tabDirection}
+                    initial={{ opacity: 0, x: tabDirection * -40 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: tabDirection * 40 }}
+                    transition={{ type: 'spring', stiffness: 500, damping: 35 }}
+                  >
+                    <Button onClick={() => setShowForm(true)} className="w-full mb-4">
+                      <Plus className="w-4 h-4 mr-2" /> {t('goals.addNew')}
+                    </Button>
+                    {activeGoals.length === 0 ? (
+                      <div className="text-center py-12">
+                        <Target className="w-12 h-12 text-muted-foreground mx-auto mb-3" />
+                        <p className="font-heading font-semibold">{t('goals.noActive')}</p>
+                        <p className="text-sm text-muted-foreground mt-1">{t('goals.noActiveDesc')}</p>
+                      </div>
+                    ) : (
+                      <GoalsList
+                        goals={activeGoals}
+                        logs={logs}
+                        isViewingCompleted={false}
+                        onEdit={(goal) => { setEditing(goal); setShowForm(true); }}
+                        onDelete={(id) => deleteMutation.mutate(id)}
+                        onComplete={(id) => completeMutation.mutate(id)}
+                      />
+                    )}
+                  </motion.div>
+                ) : (
+                  <motion.div
+                    key="completed"
+                    custom={tabDirection}
+                    initial={{ opacity: 0, x: tabDirection * -40 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: tabDirection * 40 }}
+                    transition={{ type: 'spring', stiffness: 500, damping: 35 }}
+                  >
+                    {completedGoals.length === 0 ? (
+                      <div className="text-center py-12">
+                        <Target className="w-12 h-12 text-muted-foreground mx-auto mb-3" />
+                        <p className="font-heading font-semibold">{t('goals.noCompleted')}</p>
+                        <p className="text-sm text-muted-foreground mt-1">{t('goals.noCompletedDesc')}</p>
+                      </div>
+                    ) : (
+                      <GoalsList
+                        goals={completedGoals}
+                        logs={logs}
+                        isViewingCompleted={true}
+                        onEdit={(goal) => { setEditing(goal); setShowForm(true); }}
+                        onDelete={(id) => deleteMutation.mutate(id)}
+                      />
+                    )}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          </>
+        ) : (
+          <GoalForm initial={editing} onSubmit={handleSubmit} onCancel={closeForm} userProfile={userProfile} />
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}

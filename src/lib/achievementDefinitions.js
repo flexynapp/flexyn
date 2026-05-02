@@ -1,0 +1,190 @@
+/*
+ * WARNING: This list is duplicated between:
+ *   - src/lib/achievementDefinitions.js (client)
+ *   - base44/functions/updateUserXpAndAchievements/entry.ts (server)
+ * Any change to achievements MUST be applied to BOTH files or they will drift.
+ */
+
+export const ACHIEVEMENT_DEFINITIONS = [
+  {
+    achievement_id: 'first_regimen',
+    nameKey: 'achievementDefs.first_regimen.name',
+    descriptionKey: 'achievementDefs.first_regimen.desc',
+    icon: '🏗️',
+    target: 1,
+    category: 'regimen',
+    xp_reward: 100,
+  },
+  {
+    achievement_id: 'five_regimens',
+    nameKey: 'achievementDefs.five_regimens.name',
+    descriptionKey: 'achievementDefs.five_regimens.desc',
+    icon: '📚',
+    target: 5,
+    category: 'regimen',
+    xp_reward: 300,
+  },
+  {
+    achievement_id: 'ten_regimens',
+    nameKey: 'achievementDefs.ten_regimens.name',
+    descriptionKey: 'achievementDefs.ten_regimens.desc',
+    icon: '🏢',
+    target: 10,
+    category: 'regimen',
+    xp_reward: 750,
+  },
+  {
+    achievement_id: 'first_workout',
+    nameKey: 'achievementDefs.first_workout.name',
+    descriptionKey: 'achievementDefs.first_workout.desc',
+    icon: '🚀',
+    target: 1,
+    category: 'workout',
+    xp_reward: 50,
+  },
+  {
+    achievement_id: 'ten_workouts',
+    nameKey: 'achievementDefs.ten_workouts.name',
+    descriptionKey: 'achievementDefs.ten_workouts.desc',
+    icon: '💪',
+    target: 10,
+    category: 'workout',
+    xp_reward: 250,
+  },
+  {
+    achievement_id: 'fifty_workouts',
+    nameKey: 'achievementDefs.fifty_workouts.name',
+    descriptionKey: 'achievementDefs.fifty_workouts.desc',
+    icon: '⚔️',
+    target: 50,
+    category: 'workout',
+    xp_reward: 1000,
+  },
+  {
+    achievement_id: 'hundred_workouts',
+    nameKey: 'achievementDefs.hundred_workouts.name',
+    descriptionKey: 'achievementDefs.hundred_workouts.desc',
+    icon: '👑',
+    target: 100,
+    category: 'workout',
+    xp_reward: 2500,
+  },
+  {
+    achievement_id: 'five_goals',
+    nameKey: 'achievementDefs.five_goals.name',
+    descriptionKey: 'achievementDefs.five_goals.desc',
+    icon: '🎯',
+    target: 5,
+    category: 'goal',
+    xp_reward: 400,
+  },
+  {
+    achievement_id: 'first_goal',
+    nameKey: 'achievementDefs.first_goal.name',
+    descriptionKey: 'achievementDefs.first_goal.desc',
+    icon: '🎪',
+    target: 1,
+    category: 'goal',
+    xp_reward: 100,
+  },
+  {
+    achievement_id: 'five_workouts_month',
+    nameKey: 'achievementDefs.five_workouts_month.name',
+    descriptionKey: 'achievementDefs.five_workouts_month.desc',
+    icon: '📅',
+    target: 5,
+    category: 'milestone',
+    xp_reward: 350,
+  },
+  {
+    achievement_id: 'water_intake_week',
+    nameKey: 'achievementDefs.water_intake_week.name',
+    descriptionKey: 'achievementDefs.water_intake_week.desc',
+    icon: '💧',
+    target: 7,
+    category: 'nutrition',
+    xp_reward: 200,
+  },
+  {
+    achievement_id: 'one_ton_lifted',
+    nameKey: 'achievementDefs.one_ton_lifted.name',
+    descriptionKey: 'achievementDefs.one_ton_lifted.desc',
+    icon: '🏋️',
+    target: 1000,
+    category: 'milestone',
+    xp_reward: 500,
+  },
+  {
+    achievement_id: 'five_ton_lifted',
+    nameKey: 'achievementDefs.five_ton_lifted.name',
+    descriptionKey: 'achievementDefs.five_ton_lifted.desc',
+    icon: '🔥',
+    target: 5000,
+    category: 'milestone',
+    xp_reward: 1500,
+  },
+  {
+    achievement_id: 'first_5k',
+    nameKey: 'achievementDefs.first_5k.name',
+    descriptionKey: 'achievementDefs.first_5k.desc',
+    icon: '🏃',
+    category: 'cardio',
+    xp_reward: 200,
+  },
+  {
+    achievement_id: 'first_10k',
+    nameKey: 'achievementDefs.first_10k.name',
+    descriptionKey: 'achievementDefs.first_10k.desc',
+    icon: '🏃‍♂️',
+    category: 'cardio',
+    xp_reward: 400,
+  },
+  {
+    achievement_id: 'first_half_marathon',
+    nameKey: 'achievementDefs.first_half_marathon.name',
+    descriptionKey: 'achievementDefs.first_half_marathon.desc',
+    icon: '🥇',
+    category: 'cardio',
+    xp_reward: 1000,
+  },
+  {
+    achievement_id: 'cardio_100km_lifetime',
+    nameKey: 'achievementDefs.cardio_100km_lifetime.name',
+    descriptionKey: 'achievementDefs.cardio_100km_lifetime.desc',
+    icon: '💯',
+    category: 'cardio',
+    xp_reward: 600,
+  },
+  {
+    achievement_id: 'cardio_streak_7',
+    nameKey: 'achievementDefs.cardio_streak_7.name',
+    descriptionKey: 'achievementDefs.cardio_streak_7.desc',
+    icon: '🔥',
+    category: 'cardio',
+    xp_reward: 300,
+  },
+  {
+    achievement_id: 'first_hour_ride',
+    nameKey: 'achievementDefs.first_hour_ride.name',
+    descriptionKey: 'achievementDefs.first_hour_ride.desc',
+    icon: '🚴',
+    category: 'cardio',
+    xp_reward: 250,
+  },
+  {
+    achievement_id: 'walking_marathon',
+    nameKey: 'achievementDefs.walking_marathon.name',
+    descriptionKey: 'achievementDefs.walking_marathon.desc',
+    icon: '🚶',
+    category: 'cardio',
+    xp_reward: 800,
+  },
+  ];
+
+export function getAchievementById(achievementId) {
+  return ACHIEVEMENT_DEFINITIONS.find((a) => a.achievement_id === achievementId);
+}
+
+export function getAllAchievements() {
+  return ACHIEVEMENT_DEFINITIONS;
+}

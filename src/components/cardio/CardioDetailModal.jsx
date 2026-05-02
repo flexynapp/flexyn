@@ -1,0 +1,267 @@
+import React, { useState, useEffect } from 'react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import {
+  AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogHeader,
+  AlertDialogTitle, AlertDialogDescription, AlertDialogFooter,
+  AlertDialogAction, AlertDialogCancel
+} from '@/components/ui/alert-dialog';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Pencil, Trash2 } from 'lucide-react';
+import { format, parseISO } from 'date-fns';
+import { toast } from 'sonner';
+import { useQueryClient } from '@tanstack/react-query';
+import { useAuth } from '@/lib/AuthContext';
+import { useLanguage } from '@/lib/LanguageContext';
+import { useDistanceUnit } from '@/lib/DistanceUnitContext';
+import { formatDistance, formatDuration, formatPace } from '@/lib/distanceUnit';
+import { base44 } from '@/api/base44Client';
+import RouteMap from './RouteMap';
+import { detectNewPRs, PR_LABELS } from '@/lib/cardioPRs';
+
+function DetailRow({ label, value }) {
+  if (value == null || value === '') return null;
+  return (
+    <div className="flex justify-between items-start gap-4 py-1.5 border-b border-border/50 last:border-0">
+      <span className="text-sm text-muted-foreground shrink-0">{label}</span>
+      <span className="text-sm font-medium text-right">{value}</span>
+    </div>
+  );
+}
+
+function haversineMeters(a, b) {
+  const R = 6371000;
+  const φ1 = a.lat * Math.PI / 180;
+  const φ2 = b.lat * Math.PI / 180;
+  const Δφ = (b.lat - a.lat) * Math.PI / 180;
+  const Δλ = (b.lng - a.lng) * Math.PI / 180;
+  const x = Math.sin(Δφ / 2) ** 2 + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(x));
+}
+
+function computeSplits(track, unitMeters) {
+  if (!track || track.length < 2) return [];
+  const splits = [];
+  let cumDist = 0;
+  let lastSplitDist = 0;
+  let lastSplitTime = track[0].timestamp_ms;
+  
+  for (let i = 1; i < track.length; i++) {
+    cumDist += haversineMeters(track[i-1], track[i]);
+    while (cumDist - lastSplitDist >= unitMeters) {
+      // Interpolate the time at which cumulative distance hit (lastSplitDist + unitMeters)
+      const fraction = (lastSplitDist + unitMeters - (cumDist - haversineMeters(track[i-1], track[i])))
+                       / haversineMeters(track[i-1], track[i]);
+      const splitEndTime = track[i-1].timestamp_ms
+        + (track[i].timestamp_ms - track[i-1].timestamp_ms) * fraction;
+      const splitSeconds = (splitEndTime - lastSplitTime) / 1000;
+      splits.push({
+        index: splits.length + 1,
+        seconds: splitSeconds,
+      });
+      lastSplitDist += unitMeters;
+      lastSplitTime = splitEndTime;
+    }
+  }
+  
+  // Trailing partial split (only show if > 30% of unit covered)
+  const remaining = cumDist - lastSplitDist;
+  if (remaining > unitMeters * 0.3) {
+    const finalTime = track[track.length - 1].timestamp_ms;
+    const partialSeconds = (finalTime - lastSplitTime) / 1000;
+    splits.push({
+      index: splits.length + 1,
+      seconds: partialSeconds,
+      partial: remaining / unitMeters,
+    });
+  }
+  
+  return splits;
+}
+
+export default function CardioDetailModal({ log, open, onOpenChange, onEdit }) {
+  const { t } = useLanguage();
+  const { user } = useAuth();
+  const { distanceUnit } = useDistanceUnit();
+  const queryClient = useQueryClient();
+  const [prsForThisLog, setPrsForThisLog] = useState([]);
+
+  useEffect(() => {
+    if (!log?.id) return;
+    let cancelled = false;
+    (async () => {
+      const all = await base44.entities.CardioLog.filter(
+        { created_by: user.email }, '-date', 1000
+      );
+      if (cancelled) return;
+      const prior = all.filter(l =>
+        l.id !== log.id &&
+        new Date(l.created_date || l.date) < new Date(log.created_date || log.date)
+      );
+      setPrsForThisLog(detectNewPRs(log, prior));
+    })();
+    return () => { cancelled = true; };
+  }, [log?.id]);
+
+  if (!log || !open) return null;
+
+  const speedDisplay = log.avg_speed_kmh != null
+    ? `${(distanceUnit === 'mi' ? log.avg_speed_kmh / 1.609344 : log.avg_speed_kmh).toFixed(1)} ${distanceUnit === 'mi' ? 'mph' : 'km/h'}`
+    : null;
+
+  const elevationDisplay = log.elevation_gain_m != null
+    ? `${distanceUnit === 'mi' ? (log.elevation_gain_m / 0.3048).toFixed(0) : log.elevation_gain_m.toFixed(0)} ${distanceUnit === 'mi' ? 'ft' : 'm'}`
+    : null;
+
+  const handleDelete = async () => {
+    await base44.entities.CardioLog.delete(log.id);
+    queryClient.invalidateQueries({ queryKey: ['cardioLogs', user?.email] });
+    toast.success(t('cardio.deleted'));
+    onOpenChange(false);
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-sm max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="font-heading">
+            {t(`cardio.type.${log.type}`)}
+          </DialogTitle>
+          <div className="flex items-center gap-2 mt-1 flex-wrap">
+            <Badge variant="secondary" className="w-fit">
+              {log.mode === 'live' ? t('cardio.input.live') : t('cardio.input.manual')}
+            </Badge>
+            {prsForThisLog.length > 0 && (
+              prsForThisLog.map(pr => (
+                <span key={pr.distance}
+                      className="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 text-xs font-medium">
+                  🏆 {t('cardio.pr.badge').replace('{label}', PR_LABELS[pr.distance])}
+                </span>
+              ))
+            )}
+          </div>
+        </DialogHeader>
+
+        {log.gps_track && Array.isArray(log.gps_track) && log.gps_track.length > 1 && (
+          <div className="mb-4">
+            <p className="text-sm font-medium mb-2">{t('cardio.detail.routeMap')}</p>
+            <RouteMap track={log.gps_track} />
+          </div>
+        )}
+
+        {log.gps_track && Array.isArray(log.gps_track) && log.gps_track.length === 0 && (
+          <div className="mb-4 p-3 rounded-lg bg-muted text-center">
+            <p className="text-sm text-muted-foreground">{t('cardio.detail.noRouteData')}</p>
+          </div>
+        )}
+
+        {log.gps_track && log.gps_track.length >= 2 && (() => {
+          const unit = distanceUnit === 'km' ? 1000 : 1609.344;
+          const splits = computeSplits(log.gps_track, unit);
+          if (splits.length === 0) return null;
+          const fastest = splits.filter(s => !s.partial).reduce((min, s) =>
+            (s.seconds < min ? s.seconds : min), Infinity);
+          return (
+            <div className="mt-4">
+              <p className="text-sm font-medium mb-2">{t('cardio.detail.splits')}</p>
+              <div className="space-y-1">
+                <div className="flex text-xs text-muted-foreground px-2">
+                  <span className="w-12">{t('cardio.detail.split')}</span>
+                  <span className="flex-1">{t('cardio.detail.time')}</span>
+                  <span className="flex-1 text-right">{t('cardio.detail.pace')}</span>
+                </div>
+                {splits.map(s => {
+                  const isFastest = !s.partial && s.seconds === fastest;
+                  const slowest = Math.max(...splits.filter(x => !x.partial).map(x => x.seconds));
+                  const barPct = Math.min(100, (s.seconds / slowest) * 100);
+                  return (
+                    <div key={s.index} className={`flex items-center px-2 py-1.5 rounded-md ${
+                      isFastest ? 'bg-primary/10' : 'bg-secondary/40'
+                    }`}>
+                      <span className="w-12 text-sm font-medium">
+                        {s.index}{s.partial ? '*' : ''}
+                      </span>
+                      <span className="flex-1 text-sm">
+                        {Math.floor(s.seconds / 60)}:{Math.round(s.seconds % 60).toString().padStart(2,'0')}
+                      </span>
+                      <div className="flex-1 flex items-center justify-end gap-2">
+                        <div className="h-1 rounded-full bg-primary/40"
+                             style={{ width: `${barPct * 0.6}%` }} />
+                        {isFastest && <span className="text-xs">⚡</span>}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })()}
+
+        <div className="space-y-0 mt-2">
+          <DetailRow
+            label={t('cardio.field.date')}
+            value={log.date ? format(parseISO(log.date), 'PPP') : null}
+          />
+          <DetailRow
+            label={t('cardio.field.duration')}
+            value={log.duration_seconds ? formatDuration(log.duration_seconds) : null}
+          />
+          <DetailRow
+            label={t('cardio.field.distance')}
+            value={log.distance_meters ? formatDistance(log.distance_meters, distanceUnit, 2) : null}
+          />
+          <DetailRow
+            label={t('cardio.field.avgPace')}
+            value={log.pace_seconds_per_km ? formatPace(log.pace_seconds_per_km, distanceUnit) : null}
+          />
+          <DetailRow
+            label={t('cardio.field.avgSpeed')}
+            value={speedDisplay}
+          />
+          <DetailRow
+            label={t('cardio.field.calories')}
+            value={log.calories ? `${log.calories} kcal` : null}
+          />
+          <DetailRow
+            label={t('cardio.field.incline')}
+            value={log.incline_percent != null ? `${log.incline_percent}%` : null}
+          />
+          <DetailRow
+            label={t('cardio.field.elevation')}
+            value={elevationDisplay}
+          />
+        </div>
+
+        {log.notes && (
+          <p className="text-sm text-muted-foreground mt-2 pt-2 border-t border-border/50">
+            {log.notes}
+          </p>
+        )}
+
+        <DialogFooter className="flex-row gap-2 mt-4">
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button variant="destructive" size="sm" className="flex-1">
+                <Trash2 className="w-4 h-4 mr-1" /> {t('common.delete')}
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>{t('cardio.deleteConfirm')}</AlertDialogTitle>
+                <AlertDialogDescription>{t('cardio.deleteConfirmDesc')}</AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
+                <AlertDialogAction onClick={handleDelete}>{t('common.delete')}</AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+
+          <Button variant="outline" size="sm" className="flex-1" onClick={() => onEdit(log)}>
+            <Pencil className="w-4 h-4 mr-1" /> {t('common.edit')}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}

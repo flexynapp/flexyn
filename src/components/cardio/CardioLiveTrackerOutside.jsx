@@ -1,0 +1,675 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { motion } from 'framer-motion';
+import { format } from 'date-fns';
+import { toast } from 'sonner';
+import { useQueryClient } from '@tanstack/react-query';
+import { Card } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import {
+  AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogAction, AlertDialogCancel
+} from '@/components/ui/alert-dialog';
+import { Play, Pause, Square, AlertTriangle, Save, X } from 'lucide-react';
+import { useLanguage } from '@/lib/LanguageContext';
+import { useAuth } from '@/lib/AuthContext';
+import { useDistanceUnit } from '@/lib/DistanceUnitContext';
+import { useSettings } from '@/lib/SettingsContext';
+import {
+  formatDistance, formatDuration, formatPace,
+  speedKmhFrom, paceSecPerKmFrom,
+} from '@/lib/distanceUnit';
+import { estimateCalories, userWeightKg } from '@/lib/cardioCalories';
+import { getMaxRealisticCalories } from '@/lib/cardioLimits';
+import { base44 } from '@/api/base44Client';
+import { detectNewPRs, PR_LABELS } from '@/lib/cardioPRs';
+import {
+  speak, stopSpeaking, buildMilestoneText, buildStartText,
+  buildPauseText, buildResumeText, buildFinishText, spokenDuration,
+} from '@/lib/cardioVoiceCoach';
+import { snapshot, readSnapshot, clearSnapshot } from '@/lib/cardioSession';
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function haversineMeters(a, b) {
+  const R = 6371000;
+  const φ1 = a.lat * Math.PI / 180;
+  const φ2 = b.lat * Math.PI / 180;
+  const Δφ = (b.lat - a.lat) * Math.PI / 180;
+  const Δλ = (b.lng - a.lng) * Math.PI / 180;
+  const x = Math.sin(Δφ / 2) ** 2
+          + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(x));
+}
+
+const ACCURACY_THRESHOLD_M = 30;
+const MIN_MOVE_METERS = 5;
+const STABILIZE_MS = 5000;
+const STILL_SPEED_THRESHOLD_MPS = 0.5;
+const STILL_DURATION_MS = 5000;
+
+function weatherEmoji(code) {
+  if (code === 0) return '☀️';
+  if (code <= 2) return '🌤';
+  if (code <= 3) return '☁️';
+  if (code <= 48) return '🌫';
+  if (code <= 67) return '🌧';
+  if (code <= 77) return '❄️';
+  if (code <= 82) return '🌧';
+  if (code <= 86) return '🌨';
+  if (code >= 95) return '⛈';
+  return '🌡';
+}
+
+// ─── Component ────────────────────────────────────────────────────────────────
+
+export default function CardioLiveTrackerOutside({ mode, onCancel, onSaved, userProfile = {} }) {
+  const { t, language } = useLanguage();
+  const { user } = useAuth();
+  const { distanceUnit } = useDistanceUnit();
+  const { cardioVoiceCues, cardioAutoPause } = useSettings();
+  const queryClient = useQueryClient();
+
+  const voiceEnabled = cardioVoiceCues !== false;
+  const autoPauseEnabled = cardioAutoPause !== false;
+
+  const [status, setStatus] = useState('idle');
+  const [error, setError] = useState(null);
+  const [, forceTick] = useState(0);
+  const [confirmDiscardOpen, setConfirmDiscardOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [weather, setWeather] = useState(null);
+
+  const startedAtRef = useRef(null);
+  const pauseStartedAtRef = useRef(null);
+  const pausedTotalMsRef = useRef(0);
+  const trackRef = useRef([]);
+  const distanceMetersRef = useRef(0);
+  const lastAcceptedRef = useRef(null);
+  const watchIdRef = useRef(null);
+  const tickIdRef = useRef(null);
+  const wakeLockRef = useRef(null);
+  const lastFixAccuracyRef = useRef(null);
+  const lastMilestoneRef = useRef(0);
+  const stillSinceRef = useRef(null);
+  const wasAutoPausedRef = useRef(false);
+
+  // ── Restore snapshot on mount ──
+  useEffect(() => {
+    const snap = readSnapshot();
+    if (!snap || snap.kind !== 'outside' || snap.mode !== mode) return;
+    startedAtRef.current = snap.startedAt;
+    pausedTotalMsRef.current = snap.pausedTotalMs || 0;
+    if (snap.pauseStartedAt) pauseStartedAtRef.current = snap.pauseStartedAt;
+    trackRef.current = snap.track || [];
+    distanceMetersRef.current = snap.distanceMeters || 0;
+    lastAcceptedRef.current = snap.track?.length ? snap.track[snap.track.length - 1] : null;
+    setStatus('paused');
+    toast.success(t('cardio.recover.recovered'));
+    forceTick(n => n + 1);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── Fetch weather on mount ──
+  useEffect(() => {
+    if (!navigator.geolocation) return;
+    navigator.geolocation.getCurrentPosition(async (pos) => {
+      try {
+        const { latitude, longitude } = pos.coords;
+        const tempUnit = distanceUnit === 'mi' ? 'fahrenheit' : 'celsius';
+        const url = `https://api.open-meteo.com/v1/forecast`
+          + `?latitude=${latitude}&longitude=${longitude}`
+          + `&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m`
+          + `&temperature_unit=${tempUnit}`
+          + `&wind_speed_unit=${distanceUnit === 'mi' ? 'mph' : 'kmh'}`;
+        const res = await fetch(url);
+        const data = await res.json();
+        if (data?.current) {
+          setWeather({
+            temp: Math.round(data.current.temperature_2m),
+            feels: Math.round(data.current.apparent_temperature),
+            code: data.current.weather_code,
+            wind: Math.round(data.current.wind_speed_10m),
+            unit: tempUnit === 'fahrenheit' ? '°F' : '°C',
+            speedUnit: distanceUnit === 'mi' ? 'mph' : 'km/h',
+          });
+        }
+      } catch {}
+    }, () => {}, { enableHighAccuracy: false, timeout: 8000 });
+  }, [distanceUnit]);
+
+  // ── Auto-snapshot every 10s while active ──
+  useEffect(() => {
+    if (status !== 'tracking' && status !== 'paused') return;
+    const id = setInterval(() => {
+      snapshot({
+        kind: 'outside',
+        mode,
+        startedAt: startedAtRef.current,
+        pausedTotalMs: pausedTotalMsRef.current,
+        pauseStartedAt: status === 'paused' ? pauseStartedAtRef.current : null,
+        track: trackRef.current,
+        distanceMeters: distanceMetersRef.current,
+        status,
+        savedAt: Date.now(),
+      });
+    }, 10000);
+    return () => clearInterval(id);
+  }, [status, mode]);
+
+  // ── Pre-load voice list (Chrome/Safari quirk) ──
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.speechSynthesis) return;
+    window.speechSynthesis.getVoices();
+    const handler = () => window.speechSynthesis.getVoices();
+    window.speechSynthesis.addEventListener?.('voiceschanged', handler);
+    return () => window.speechSynthesis.removeEventListener?.('voiceschanged', handler);
+  }, []);
+
+  // ── Derived ──
+  const elapsedMs = startedAtRef.current
+    ? (status === 'paused'
+        ? (pauseStartedAtRef.current - startedAtRef.current - pausedTotalMsRef.current)
+        : (Date.now() - startedAtRef.current - pausedTotalMsRef.current))
+    : 0;
+  const elapsedSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
+  const distanceMeters = distanceMetersRef.current;
+  const pace = paceSecPerKmFrom(distanceMeters, elapsedSeconds);
+  const speedKmh = speedKmhFrom(distanceMeters, elapsedSeconds);
+  const calories = estimateCalories({
+    type: `${mode}_outside`,
+    durationSeconds: elapsedSeconds,
+    distanceMeters,
+    weightKg: userWeightKg(user),
+  });
+
+  // ── GPS handler ──
+  const onGpsFix = (pos) => {
+    const fix = {
+      lat: pos.coords.latitude,
+      lng: pos.coords.longitude,
+      timestamp_ms: pos.timestamp,
+      speed_mps: pos.coords.speed ?? 0,
+      accuracy_m: pos.coords.accuracy ?? 999,
+    };
+    lastFixAccuracyRef.current = fix.accuracy_m;
+    if (Date.now() - startedAtRef.current < STABILIZE_MS) {
+      lastAcceptedRef.current = fix;
+      return;
+    }
+
+    // Auto-pause logic
+    if (autoPauseEnabled && status === 'tracking') {
+      const speed = fix.speed_mps || 0;
+      if (speed < STILL_SPEED_THRESHOLD_MPS) {
+        if (!stillSinceRef.current) stillSinceRef.current = Date.now();
+        else if (Date.now() - stillSinceRef.current > STILL_DURATION_MS) {
+          wasAutoPausedRef.current = true;
+          pause();
+          toast.info(t('cardio.live.autoPaused'));
+          try { navigator.vibrate?.(60); } catch {}
+          if (voiceEnabled) speak(buildPauseText(t), language);
+          return;
+        }
+      } else {
+        stillSinceRef.current = null;
+      }
+    }
+
+    if (fix.accuracy_m > ACCURACY_THRESHOLD_M) return;
+    if (lastAcceptedRef.current) {
+      const d = haversineMeters(lastAcceptedRef.current, fix);
+      if (d < MIN_MOVE_METERS) return;
+      distanceMetersRef.current += d;
+    }
+    lastAcceptedRef.current = fix;
+    trackRef.current.push(fix);
+
+    // ── Voice milestone ──
+    if (voiceEnabled) {
+      const milestoneMeters = distanceUnit === 'km' ? 1000 : 1609.344;
+      const currentMilestone = Math.floor(distanceMetersRef.current / milestoneMeters);
+      if (currentMilestone > lastMilestoneRef.current && currentMilestone > 0) {
+        lastMilestoneRef.current = currentMilestone;
+        const elapsed = Math.floor((Date.now() - startedAtRef.current - pausedTotalMsRef.current) / 1000);
+        const distLabel = distanceUnit === 'km'
+          ? `${currentMilestone} ${currentMilestone === 1 ? t('cardio.voice.kilometer') : t('cardio.voice.kilometers')}`
+          : `${currentMilestone} ${currentMilestone === 1 ? t('cardio.voice.mile') : t('cardio.voice.miles')}`;
+        const timeLabel = spokenDuration(t, elapsed);
+        const paceSecPerKm = elapsed / (distanceMetersRef.current / 1000);
+        const paceSec = distanceUnit === 'km' ? paceSecPerKm : paceSecPerKm * 1.609344;
+        const pm = Math.floor(paceSec / 60);
+        const ps = Math.round(paceSec % 60);
+        const paceLabel = `${pm} ${t('cardio.voice.minutes')} ${ps} ${t('cardio.voice.seconds')} ${
+          distanceUnit === 'km' ? t('cardio.voice.perKilometer') : t('cardio.voice.perMile')
+        }`;
+        speak(buildMilestoneText(t, { distanceLabel: distLabel, timeLabel, paceLabel }), language);
+        try { navigator.vibrate?.(80); } catch {}
+      }
+    }
+  };
+
+  const onGpsError = (err) => {
+    if (err.code === err.PERMISSION_DENIED) setError('denied');
+    else setError('unavailable');
+    setStatus('error');
+    if (watchIdRef.current != null) {
+      navigator.geolocation.clearWatch(watchIdRef.current);
+      watchIdRef.current = null;
+    }
+  };
+
+  // ── Start ──
+  const start = () => {
+    if (!navigator.geolocation) {
+      setError('unavailable');
+      setStatus('error');
+      return;
+    }
+    setStatus('tracking');
+    startedAtRef.current = Date.now();
+    pausedTotalMsRef.current = 0;
+    trackRef.current = [];
+    distanceMetersRef.current = 0;
+    lastAcceptedRef.current = null;
+    lastFixAccuracyRef.current = null;
+    lastMilestoneRef.current = 0;
+
+    if (voiceEnabled) speak(buildStartText(t), language);
+
+    watchIdRef.current = navigator.geolocation.watchPosition(
+      onGpsFix, onGpsError,
+      { enableHighAccuracy: true, maximumAge: 1000, timeout: 15000 }
+    );
+    tickIdRef.current = setInterval(() => forceTick(t => t + 1), 500);
+  };
+
+  // ── Pause ──
+  const pause = () => {
+    if (status !== 'tracking') return;
+    wasAutoPausedRef.current = false;
+    stillSinceRef.current = null;
+    pauseStartedAtRef.current = Date.now();
+    setStatus('paused');
+    if (watchIdRef.current != null) {
+      navigator.geolocation.clearWatch(watchIdRef.current);
+      watchIdRef.current = null;
+    }
+    if (tickIdRef.current) {
+      clearInterval(tickIdRef.current);
+      tickIdRef.current = null;
+    }
+  };
+
+  // ── Resume ──
+  const resume = () => {
+    if (status !== 'paused') return;
+    pausedTotalMsRef.current += Date.now() - pauseStartedAtRef.current;
+    pauseStartedAtRef.current = null;
+    setStatus('tracking');
+    watchIdRef.current = navigator.geolocation.watchPosition(
+      onGpsFix, onGpsError,
+      { enableHighAccuracy: true, maximumAge: 1000, timeout: 15000 }
+    );
+    tickIdRef.current = setInterval(() => forceTick(t => t + 1), 500);
+  };
+
+  // ── Finish ──
+  const finish = () => {
+    if (watchIdRef.current != null) {
+      navigator.geolocation.clearWatch(watchIdRef.current);
+      watchIdRef.current = null;
+    }
+    if (tickIdRef.current) {
+      clearInterval(tickIdRef.current);
+      tickIdRef.current = null;
+    }
+    if (voiceEnabled) {
+      const distLabel = distanceUnit === 'km'
+        ? `${(distanceMetersRef.current / 1000).toFixed(2)} ${t('cardio.voice.kilometers')}`
+        : `${(distanceMetersRef.current / 1609.344).toFixed(2)} ${t('cardio.voice.miles')}`;
+      speak(buildFinishText(t, {
+        distanceLabel: distLabel,
+        timeLabel: spokenDuration(t, elapsedSeconds),
+      }), language);
+    }
+    setStatus('finished');
+  };
+
+  // ── Discard ──
+  const discardAndClose = () => {
+    if (watchIdRef.current != null) navigator.geolocation.clearWatch(watchIdRef.current);
+    if (tickIdRef.current) clearInterval(tickIdRef.current);
+    clearSnapshot();
+    onCancel();
+  };
+
+  // ── Save ──
+  const save = async () => {
+    setSaving(true);
+    try {
+      const cappedCalories = Math.min(
+        calories,
+        getMaxRealisticCalories(elapsedSeconds, userProfile)
+      );
+      const payload = {
+        date: format(new Date(startedAtRef.current), 'yyyy-MM-dd'),
+        type: `${mode}_outside`,
+        mode: 'live',
+        duration_seconds: elapsedSeconds,
+        distance_meters: distanceMetersRef.current,
+        pace_seconds_per_km: paceSecPerKmFrom(distanceMetersRef.current, elapsedSeconds),
+        avg_speed_kmh: speedKmhFrom(distanceMetersRef.current, elapsedSeconds),
+        calories: cappedCalories,
+        incline_percent: null,
+        elevation_gain_m: null,
+        notes: null,
+        gps_track: trackRef.current,
+      };
+      const createdLog = await base44.entities.CardioLog.create(payload);
+      clearSnapshot();
+      // Denormalise total distance on the User record for the distance leaderboard.
+      if (Number(payload.distance_meters) > 0) {
+        try {
+          const me = await base44.auth.me();
+          const prev = Number(me?.total_distance_meters) || 0;
+          await base44.auth.updateMe({ total_distance_meters: prev + Number(payload.distance_meters) });
+        } catch { /* non-blocking */ }
+      }
+      // Fire achievement check (non-blocking)
+      base44.functions.invoke('updateUserXpAndAchievements', {
+        xp_gained: 0,
+        action_type: 'cardio_completed',
+        action_data: {
+          duration_seconds: payload.duration_seconds,
+          distance_meters: payload.distance_meters,
+          calories: payload.calories,
+        },
+      }).catch(() => {});
+      // Check for PRs
+      const prior = await base44.entities.CardioLog.filter(
+        { created_by: user.email }, '-date', 1000
+      );
+      const priorOnly = prior.filter(l => l.id !== createdLog.id);
+      const prs = detectNewPRs(createdLog, priorOnly);
+      for (const pr of prs) {
+        const label = PR_LABELS[pr.distance];
+        toast.success(t('cardio.pr.title').replace('{label}', label), {
+          duration: 6000,
+        });
+        try { navigator.vibrate?.([100, 60, 100]); } catch {}
+      }
+      queryClient.invalidateQueries({ queryKey: ['cardioLogs', user?.email] });
+      queryClient.invalidateQueries({ queryKey: ['userProfile', user?.email] });
+      toast.success(t('cardio.saved'));
+      onSaved();
+    } catch {
+      toast.error(t('cardio.saveFailed'));
+      setSaving(false);
+    }
+  };
+
+  // ── Wake lock ──
+  useEffect(() => {
+    if (status !== 'tracking') return;
+    let lock = null;
+    (async () => {
+      try {
+        if ('wakeLock' in navigator) {
+          lock = await navigator.wakeLock.request('screen');
+          wakeLockRef.current = lock;
+        }
+      } catch {}
+    })();
+    return () => {
+      try { lock?.release(); } catch {}
+      wakeLockRef.current = null;
+    };
+  }, [status]);
+
+  // ── Auto-resume watch ──
+  useEffect(() => {
+    if (status !== 'paused' || !wasAutoPausedRef.current || !autoPauseEnabled) return;
+
+    let detectId = null;
+    if (navigator.geolocation) {
+      detectId = navigator.geolocation.watchPosition(
+        (pos) => {
+          const sp = pos.coords.speed || 0;
+          if (sp >= STILL_SPEED_THRESHOLD_MPS) {
+            wasAutoPausedRef.current = false;
+            stillSinceRef.current = null;
+            navigator.geolocation.clearWatch(detectId);
+            resume();
+            toast.info(t('cardio.live.autoResumed'));
+            try { navigator.vibrate?.(60); } catch {}
+            if (voiceEnabled) speak(buildResumeText(t), language);
+          }
+        },
+        () => {},
+        { enableHighAccuracy: true, maximumAge: 1000, timeout: 15000 }
+      );
+    }
+    return () => {
+      if (detectId != null) navigator.geolocation.clearWatch(detectId);
+    };
+  }, [status, autoPauseEnabled, voiceEnabled, language, t]);
+
+  // ── Cleanup on unmount ──
+  useEffect(() => () => {
+    if (watchIdRef.current != null) navigator.geolocation.clearWatch(watchIdRef.current);
+    if (tickIdRef.current) clearInterval(tickIdRef.current);
+    stopSpeaking();
+  }, []);
+
+  // ── GPS indicator ──
+  const accuracy = lastFixAccuracyRef.current;
+  let gpsColor = 'bg-red-500';
+  let gpsLabel = t('cardio.live.gpsAcquiring');
+  if (accuracy != null) {
+    if (accuracy < 10) { gpsColor = 'bg-green-500'; gpsLabel = t('cardio.live.gpsExcellent'); }
+    else if (accuracy < 25) { gpsColor = 'bg-yellow-400'; gpsLabel = t('cardio.live.gpsGood'); }
+    else { gpsColor = 'bg-red-500'; gpsLabel = t('cardio.live.gpsWeak'); }
+  }
+
+  // ── Format timer ──
+  const hh = Math.floor(elapsedSeconds / 3600);
+  const mm = Math.floor((elapsedSeconds % 3600) / 60);
+  const ss = elapsedSeconds % 60;
+  const timerStr = hh > 0
+    ? `${hh}:${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`
+    : `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
+
+  // ── Speed display ──
+  const speedDisplay = distanceUnit === 'mi'
+    ? `${(speedKmh / 1.609344).toFixed(1)} mph`
+    : `${speedKmh.toFixed(1)} km/h`;
+
+  // ════════════════ RENDER ════════════════
+
+  // IDLE
+  if (status === 'idle') {
+    return (
+      <Card className="p-8 text-center">
+        <div className="w-20 h-20 rounded-full bg-primary/10 flex items-center justify-center mx-auto mb-6">
+          <Play className="w-10 h-10 text-primary ml-1" />
+        </div>
+        <h2 className="font-heading text-2xl font-bold mb-2">
+          {mode === 'running' ? t('cardio.modes.running') :
+           mode === 'walking' ? t('cardio.modes.walking') : t('cardio.modes.biking')}
+        </h2>
+        <p className="text-sm text-muted-foreground mb-8">{t('cardio.env.outside')}</p>
+        {weather && (
+          <Card className="p-3 mb-4">
+            <div className="flex items-center gap-3">
+              <span className="text-2xl">{weatherEmoji(weather.code)}</span>
+              <div className="flex-1 text-left">
+                <p className="text-sm font-medium">
+                  {weather.temp}{weather.unit}
+                  <span className="text-muted-foreground text-xs ml-2">
+                    ({t('cardio.weather.feelsLike')} {weather.feels}{weather.unit})
+                  </span>
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  💨 {weather.wind} {weather.speedUnit}
+                </p>
+              </div>
+            </div>
+          </Card>
+        )}
+        <Button className="w-full h-14 font-heading font-bold text-base" onClick={start}>
+          <Play className="w-5 h-5 mr-2" />
+          {t('cardio.live.start')}
+        </Button>
+      </Card>
+    );
+  }
+
+  // ERROR
+  if (status === 'error') {
+    return (
+      <Card className="p-8 text-center">
+        <div className="w-16 h-16 rounded-full bg-destructive/10 flex items-center justify-center mx-auto mb-4">
+          <AlertTriangle className="w-8 h-8 text-destructive" />
+        </div>
+        <h2 className="font-heading text-xl font-bold mb-2">{t('cardio.live.gpsDenied')}</h2>
+        <p className="text-sm text-muted-foreground mb-6">{t('cardio.live.gpsDeniedDesc')}</p>
+        <Button variant="outline" className="w-full" onClick={onCancel}>
+          {t('cardio.live.switchToManual')}
+        </Button>
+      </Card>
+    );
+  }
+
+  // FINISHED
+  if (status === 'finished') {
+    return (
+      <Card className="p-6">
+        <h2 className="font-heading text-2xl font-bold text-center mb-6">{t('cardio.live.summaryTitle')}</h2>
+        <div className="text-center mb-6">
+          <p className="font-heading text-5xl font-bold tracking-tight">{timerStr}</p>
+          <p className="font-heading text-3xl font-semibold mt-2 text-primary">
+            {formatDistance(distanceMeters, distanceUnit, 2)}
+          </p>
+        </div>
+        <div className="grid grid-cols-3 gap-3 mb-8">
+          <StatCard label={t('cardio.field.avgPace')} value={formatPace(pace, distanceUnit)} />
+          <StatCard label={t('cardio.field.avgSpeed')} value={speedDisplay} />
+          <StatCard label={t('cardio.field.calories')} value={`${Math.round(calories)} kcal`} />
+        </div>
+        <div className="flex gap-3">
+          <Button
+            className="flex-1 h-12 font-heading font-bold"
+            onClick={save}
+            disabled={saving}
+          >
+            <Save className="w-5 h-5 mr-2" />
+            {saving ? t('cardio.saving') : t('cardio.save')}
+          </Button>
+          <Button
+            variant="outline"
+            className="flex-1 h-12"
+            onClick={onCancel}
+            disabled={saving}
+          >
+            <X className="w-4 h-4 mr-2" />
+            {t('cardio.live.discard')}
+          </Button>
+        </div>
+      </Card>
+    );
+  }
+
+  // TRACKING / PAUSED
+  return (
+    <>
+      <Card className="p-5 relative">
+        {/* Discard button */}
+        <button
+          className="absolute top-3 right-3 p-1.5 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+          onClick={() => setConfirmDiscardOpen(true)}
+        >
+          <X className="w-4 h-4" />
+        </button>
+
+        {/* Timer */}
+        <div className="text-center mb-2 pt-2">
+          <motion.p
+            className="font-heading text-5xl font-bold tracking-tight"
+            key={timerStr}
+          >
+            {timerStr}
+          </motion.p>
+        </div>
+
+        {/* Distance */}
+        <p className="font-heading text-3xl font-semibold text-center text-primary mb-5">
+          {formatDistance(distanceMeters, distanceUnit, 2)}
+        </p>
+
+        {/* Stats grid */}
+        <div className="grid grid-cols-3 gap-2 mb-4">
+          <StatCard label={t('cardio.field.avgPace')} value={formatPace(pace, distanceUnit)} />
+          <StatCard label={t('cardio.field.avgSpeed')} value={speedDisplay} />
+          <StatCard label={t('cardio.field.calories')} value={`${Math.round(calories)}`} small />
+        </div>
+
+        {/* GPS indicator */}
+        <div className="flex items-center justify-center gap-2 mb-5">
+          <span className={`w-2.5 h-2.5 rounded-full ${gpsColor} ${status === 'tracking' ? 'animate-pulse' : ''}`} />
+          <span className="text-xs text-muted-foreground">{gpsLabel}</span>
+        </div>
+
+        {/* Controls */}
+        <div className="flex gap-3">
+          {status === 'tracking' ? (
+            <Button variant="outline" className="flex-1 h-12 font-heading font-bold" onClick={pause}>
+              <Pause className="w-5 h-5 mr-2" />
+              {t('cardio.live.pause')}
+            </Button>
+          ) : (
+            <Button className="flex-1 h-12 font-heading font-bold" onClick={resume}>
+              <Play className="w-5 h-5 mr-2" />
+              {t('cardio.live.resume')}
+            </Button>
+          )}
+          <Button
+            variant="destructive"
+            className="flex-1 h-12 font-heading font-bold"
+            onClick={finish}
+          >
+            <Square className="w-5 h-5 mr-2" />
+            {t('cardio.live.finish')}
+          </Button>
+        </div>
+      </Card>
+
+      {/* Discard confirm dialog */}
+      <AlertDialog open={confirmDiscardOpen} onOpenChange={setConfirmDiscardOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('cardio.live.confirmDiscard')}</AlertDialogTitle>
+            <AlertDialogDescription>{t('cardio.live.confirmDiscardDesc')}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={discardAndClose}
+            >
+              {t('cardio.live.discard')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
+  );
+}
+
+function StatCard({ label, value, small }) {
+  return (
+    <div className="bg-muted rounded-lg p-3 text-center">
+      <p className={`font-heading font-bold ${small ? 'text-lg' : 'text-xl'} leading-tight`}>{value}</p>
+      <p className="text-xs text-muted-foreground mt-0.5 leading-tight">{label}</p>
+    </div>
+  );
+}

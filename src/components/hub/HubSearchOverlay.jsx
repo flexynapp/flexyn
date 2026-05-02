@@ -1,0 +1,386 @@
+// src/components/hub/HubSearchOverlay.jsx
+import { useState, useEffect } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { Search, X, Users, SearchX, Trash2 } from 'lucide-react';
+import { useLanguage } from '@/lib/LanguageContext';
+import { useAuth } from '@/lib/AuthContext';
+import { base44 } from '@/api/base44Client';
+import { calculateLevelFromXp } from '@/lib/xpSystem';
+import { getTier } from '@/lib/xpTier';
+import { Skeleton } from '@/components/ui/skeleton';
+
+const RECENT_SEARCHES_KEY = 'hubRecentSearches';
+const MAX_RECENT_SEARCHES = 5;
+
+function getRecentSearches() {
+  try {
+    const stored = localStorage.getItem(RECENT_SEARCHES_KEY);
+    return stored ? JSON.parse(stored) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveRecentSearch(user) {
+  try {
+    let recent = getRecentSearches();
+    recent = recent.filter(u => u.email !== user.email);
+    recent.unshift(user);
+    recent = recent.slice(0, MAX_RECENT_SEARCHES);
+    localStorage.setItem(RECENT_SEARCHES_KEY, JSON.stringify(recent));
+  } catch {
+    // Silently fail if localStorage is unavailable
+  }
+}
+
+function removeRecentSearch(email) {
+  try {
+    let recent = getRecentSearches();
+    recent = recent.filter(u => u.email !== email);
+    localStorage.setItem(RECENT_SEARCHES_KEY, JSON.stringify(recent));
+  } catch {
+    // Silently fail if localStorage is unavailable
+  }
+}
+
+export default function HubSearchOverlay({ open, onClose, onSelectUser }) {
+  const { t } = useLanguage();
+  const { user: currentUser } = useAuth();
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [recentSearches, setRecentSearches] = useState([]);
+
+  // Load recent searches on mount
+  useEffect(() => {
+    if (open) {
+      setRecentSearches(getRecentSearches());
+    }
+  }, [open]);
+
+  // Search effect
+  useEffect(() => {
+    if (!searchQuery.trim()) {
+      setSearchResults([]);
+      setIsLoading(false);
+      return;
+    }
+
+    setIsLoading(true);
+    const timer = setTimeout(async () => {
+      try {
+        const allUsers = await base44.entities.User.list();
+        const q = searchQuery.toLowerCase();
+        const filtered = allUsers
+          .filter(u => {
+            if (!u.email) return false;
+            if (u.email === currentUser?.email) return false; // never return self
+            // Match against username OR full_name. Display stays username-only —
+            // see UserResultRow below — so full_name is used as a search key only,
+            // not surfaced in the UI.
+            const usernameMatch = u.username?.toLowerCase().includes(q);
+            const fullNameMatch = u.full_name?.toLowerCase().includes(q);
+            return Boolean(usernameMatch || fullNameMatch);
+          })
+          .slice(0, 10);
+        setSearchResults(filtered);
+      } catch {
+        setSearchResults([]);
+      } finally {
+        setIsLoading(false);
+      }
+    }, 200);
+
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  const handleSelectUser = (user) => {
+    saveRecentSearch(user);
+    onSelectUser(user);
+    setSearchQuery('');
+    onClose();
+  };
+
+  const handleRemoveRecent = (e, email) => {
+    e.stopPropagation();
+    removeRecentSearch(email);
+    setRecentSearches(getRecentSearches());
+  };
+
+  return (
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-50 bg-background overflow-y-auto"
+          style={{
+            paddingTop: 'env(safe-area-inset-top)',
+          }}
+        >
+          {/* Decorative gradient blob */}
+          <div
+            className="pointer-events-none absolute top-0 left-1/2 -translate-x-1/2 w-full h-96"
+            style={{
+              background: `radial-gradient(ellipse 800px 400px at 50% 0%, hsl(var(--primary) / 0.08), transparent)`,
+            }}
+          />
+
+          {/* Content */}
+          <div className="relative max-w-3xl mx-auto px-4 md:px-6 pt-6 pb-8">
+            {/* Header */}
+            <motion.div
+              initial={{ opacity: 0, y: -12 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.1 }}
+              className="mb-6"
+            >
+              <h1 className="font-heading font-bold text-2xl mb-4">{t('hub.search.title')}</h1>
+
+              {/* Search bar */}
+              <div className="flex items-center gap-2">
+                <div className="flex-1 relative">
+                  <div className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground">
+                    <Search className="w-6 h-6" />
+                  </div>
+                  <input
+                    autoFocus
+                    type="text"
+                    placeholder={t('hub.search.placeholder')}
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="w-full h-14 pl-12 pr-12 rounded-2xl border-2 border-border bg-card focus:border-primary/30 focus:outline-none transition-colors text-sm"
+                  />
+                  {searchQuery && (
+                    <motion.button
+                      initial={{ opacity: 0, scale: 0.8 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      onClick={() => setSearchQuery('')}
+                      className="absolute right-3 top-1/3 text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      <X className="w-5 h-5" />
+                    </motion.button>
+                  )}
+                </div>
+                <button
+                  onClick={onClose}
+                  className="p-2 rounded-lg hover:bg-secondary transition-colors text-muted-foreground hover:text-foreground shrink-0"
+                  aria-label="Close search"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </motion.div>
+
+            {/* Results container */}
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.15 }}
+            >
+              {/* Empty state with recent searches */}
+              {!searchQuery && (
+                <div className="flex flex-col items-center justify-center py-12 text-center">
+                  {recentSearches.length > 0 && (
+                    <div className="w-full mb-8">
+                      <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-3 text-left">Recent Searches</h3>
+                      <div className="space-y-1.5">
+                        {recentSearches.map((user, idx) => (
+                          <RecentSearchCard
+                            key={user.id || idx}
+                            user={user}
+                            onClick={() => handleSelectUser(user)}
+                            onRemove={(e) => handleRemoveRecent(e, user.email)}
+                          />
+                        ))}
+                      </div>
+                      <div className="h-px bg-border my-6" />
+                    </div>
+                  )}
+                  <div className="w-24 h-24 rounded-full bg-primary/5 flex items-center justify-center mb-4">
+                    <Users className="w-12 h-12 text-primary/40" />
+                  </div>
+                  <h2 className="font-heading font-bold text-xl mb-2">{t('hub.search.discoverTitle')}</h2>
+                  <p className="text-sm text-muted-foreground max-w-sm">{t('hub.search.discoverSubtitle')}</p>
+                </div>
+              )}
+
+              {/* Loading state */}
+              {searchQuery && isLoading && (
+                <div className="space-y-2">
+                  {[0, 1, 2].map(i => (
+                    <div key={i} className="flex items-center gap-3 p-3 rounded-xl">
+                      <Skeleton className="w-12 h-12 rounded-full shrink-0" />
+                      <div className="flex-1 space-y-2">
+                        <Skeleton className="h-4 w-32" />
+                        <Skeleton className="h-3 w-24" />
+                      </div>
+                      <div className="space-y-2">
+                        <Skeleton className="h-5 w-12" />
+                        <Skeleton className="h-3 w-10" />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Empty results */}
+              {searchQuery && !isLoading && searchResults.length === 0 && (
+                <div className="flex flex-col items-center justify-center py-24 text-center">
+                  <div className="w-16 h-16 rounded-full bg-destructive/5 flex items-center justify-center mb-4">
+                    <SearchX className="w-8 h-8 text-destructive/40" />
+                  </div>
+                  <h2 className="font-heading font-bold text-lg mb-1">{t('hub.search.noResultsTitle')}</h2>
+                  <p className="text-sm text-muted-foreground max-w-sm">
+                    {t('hub.search.noResultsSubtitle').replace('{query}', `"${searchQuery}"`)}
+                  </p>
+                </div>
+              )}
+
+              {/* Results */}
+              {searchQuery && !isLoading && searchResults.length > 0 && (
+                <div className="space-y-1.5">
+                  {searchResults.map((user, idx) => (
+                    <UserResultRow
+                      key={user.id}
+                      user={user}
+                      onClick={() => handleSelectUser(user)}
+                      delay={idx * 0.04}
+                    />
+                  ))}
+                </div>
+              )}
+            </motion.div>
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+function RecentSearchCard({ user, onClick, onRemove }) {
+  const { t } = useLanguage();
+  const userXp = Number(user?.total_xp) || 0;
+  const levelData = calculateLevelFromXp(userXp);
+  const tier = getTier(levelData.level, t);
+  const username = user.username || user.email?.split('@')[0] || 'athlete';
+  const initials = (username || 'A').slice(0, 2).toUpperCase();
+
+  const tierToRing = {
+    'text-yellow-500': 'ring-yellow-500',
+    'text-cyan-400': 'ring-cyan-400',
+    'text-slate-300': 'ring-slate-300',
+    'text-purple-400': 'ring-purple-400',
+    'text-rose-400': 'ring-rose-400',
+    'text-emerald-400': 'ring-emerald-400',
+    'text-blue-400': 'ring-blue-400',
+    'text-amber-400': 'ring-amber-400',
+    'text-slate-400': 'ring-slate-400',
+    'text-primary': 'ring-primary',
+  };
+
+  const ringClass = tierToRing[tier.text] || 'ring-primary';
+
+  return (
+    <motion.button
+      initial={{ opacity: 0, x: -8 }}
+      animate={{ opacity: 1, x: 0 }}
+      exit={{ opacity: 0, x: -8 }}
+      whileHover={{ y: -1 }}
+      whileTap={{ scale: 0.98 }}
+      onClick={onClick}
+      className="w-full flex items-center gap-3 p-3 rounded-xl border border-border/40 hover:border-border/80 hover:bg-secondary/40 transition-colors text-left group"
+    >
+      {/* Avatar */}
+      <div
+        className={`w-10 h-10 rounded-full shrink-0 flex items-center justify-center overflow-hidden ring-2 ${ringClass} ${
+          user.avatar_url ? '' : 'bg-primary/10'
+        }`}
+      >
+        {user.avatar_url ? (
+          <img src={user.avatar_url} alt="" className="w-full h-full object-cover" />
+        ) : (
+          <span className="font-heading font-bold text-xs text-primary">{initials}</span>
+        )}
+      </div>
+
+      {/* Center: handle + tier */}
+      <div className="flex-1 min-w-0">
+        <p className="font-heading font-bold text-sm truncate">@{username}</p>
+        <p className={`text-xs truncate ${tier.text}`}>{tier.name}</p>
+      </div>
+
+      {/* Right: remove button */}
+      <button
+        onClick={onRemove}
+        className="p-1.5 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors shrink-0"
+        aria-label="Remove from recent"
+      >
+        <Trash2 className="w-4 h-4" />
+      </button>
+    </motion.button>
+  );
+}
+
+function UserResultRow({ user, onClick, delay }) {
+  const { t } = useLanguage();
+  const userXp = Number(user?.total_xp) || 0;
+  const levelData = calculateLevelFromXp(userXp);
+  const tier = getTier(levelData.level, t);
+  const username = user.username || user.email?.split('@')[0] || 'athlete';
+  const initials = (username || 'A').slice(0, 2).toUpperCase();
+
+  const tierToRing = {
+    'text-yellow-500': 'ring-yellow-500',
+    'text-cyan-400': 'ring-cyan-400',
+    'text-slate-300': 'ring-slate-300',
+    'text-purple-400': 'ring-purple-400',
+    'text-rose-400': 'ring-rose-400',
+    'text-emerald-400': 'ring-emerald-400',
+    'text-blue-400': 'ring-blue-400',
+    'text-amber-400': 'ring-amber-400',
+    'text-slate-400': 'ring-slate-400',
+    'text-primary': 'ring-primary',
+  };
+
+  const ringClass = tierToRing[tier.text] || 'ring-primary';
+
+  return (
+    <motion.button
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay }}
+      whileHover={{ y: -1 }}
+      whileTap={{ scale: 0.98 }}
+      onClick={onClick}
+      className="w-full flex items-center gap-3 p-3 rounded-xl border border-border/40 hover:border-border/80 hover:bg-secondary/60 transition-colors text-left group"
+    >
+      {/* Avatar */}
+      <div
+        className={`w-12 h-12 rounded-full shrink-0 flex items-center justify-center overflow-hidden ring-2 ${ringClass} ${
+          user.avatar_url ? '' : 'bg-primary/10'
+        }`}
+      >
+        {user.avatar_url ? (
+          <img src={user.avatar_url} alt="" className="w-full h-full object-cover" />
+        ) : (
+          <span className="font-heading font-bold text-sm text-primary">{initials}</span>
+        )}
+      </div>
+
+      {/* Center: handle */}
+      <div className="flex-1 min-w-0">
+        <p className="font-heading font-bold text-base truncate">@{username}</p>
+      </div>
+
+      {/* Right: level + tier */}
+      <div className="flex flex-col items-end gap-1 shrink-0">
+        <div className={`px-2 py-0.5 rounded-md bg-gradient-to-r ${tier.badge} shadow-sm`}>
+          <span className="text-xs font-bold text-white drop-shadow">Lv {levelData.level}</span>
+        </div>
+        <span className={`text-[10px] font-bold uppercase tracking-widest ${tier.text}`}>{tier.name}</span>
+      </div>
+    </motion.button>
+  );
+}
