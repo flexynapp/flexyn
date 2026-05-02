@@ -1067,7 +1067,10 @@ export default function Onboarding() {
       // (e.g. CORS from a preview deployment). User can update profile later.
       markReturningUser();
       setSaving(false);
-      toast.error('Profile save failed — you can update it later in Settings.');
+      // Only show the error in production — on localhost it's just a CORS dev quirk
+      if (import.meta.env.PROD) {
+        toast.error('Profile save failed — you can update it later in Settings.');
+      }
       navigate('/dashboard', { replace: true });
     }
   };
