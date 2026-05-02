@@ -1063,7 +1063,12 @@ export default function Onboarding() {
       navigate('/dashboard', { replace: true });
     } catch (err) {
       console.error('Onboarding submit failed:', err);
+      // Still navigate to dashboard even if the profile save fails
+      // (e.g. CORS from a preview deployment). User can update profile later.
+      markReturningUser();
       setSaving(false);
+      toast.error('Profile save failed — you can update it later in Settings.');
+      navigate('/dashboard', { replace: true });
     }
   };
 
