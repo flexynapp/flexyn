@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { LOGO_URL } from '@/lib/constants';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { base44 } from '@/api/base44Client';
@@ -36,7 +37,7 @@ export default function Splash() {
         className="flex flex-col items-center gap-3"
       >
         <div className="w-20 h-20 rounded-2xl overflow-hidden shadow-2xl">
-          <img src="https://media.base44.com/images/public/69dfb5d1674e81512478f6f7/a7dcfb0be_transparent-logo.png" alt="Flexyn" className="w-full h-full object-contain" />
+          <img src="{LOGO_URL}" alt="Flexyn" className="w-full h-full object-contain" />
         </div>
         <motion.div
           initial={{ opacity: 0, y: 8 }}

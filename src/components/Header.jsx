@@ -1,4 +1,5 @@
 import { useNavigate, useLocation } from 'react-router-dom';
+import { LOGO_URL } from '@/lib/constants';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronLeft } from 'lucide-react';
 import { useState, useEffect } from 'react';
@@ -61,7 +62,7 @@ export default function Header() {
             onClick={() => navigate('/dashboard')}
             className="w-9 h-9 rounded-xl overflow-hidden shrink-0 hover:opacity-80 transition-opacity"
           >
-            <img src="https://media.base44.com/images/public/69dfb5d1674e81512478f6f7/a7dcfb0be_transparent-logo.png" alt="Flexyn" className="w-full h-full object-contain" />
+            <img src="{LOGO_URL}" alt="Flexyn" className="w-full h-full object-contain" />
           </button>
         )}
         <button

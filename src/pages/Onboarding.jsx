@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { LOGO_URL } from '@/lib/constants';
 import { useLanguage } from '@/lib/LanguageContext';
 import { useWeightUnit } from '@/lib/WeightUnitContext';
 // Note: useWeightUnit is also used in the top-level Onboarding component
@@ -432,7 +433,7 @@ function WelcomeScreen({ onGetStarted }) {
             transition={{ duration: 4, repeat: Infinity, ease: 'easeInOut' }}
             className="relative w-16 h-16 rounded-2xl overflow-hidden shadow-xl shadow-primary/30 ring-1 ring-primary/20"
           >
-            <img src="https://media.base44.com/images/public/69dfb5d1674e81512478f6f7/a7dcfb0be_transparent-logo.png" alt="Flexyn" className="w-full h-full object-contain" />
+            <img src="{LOGO_URL}" alt="Flexyn" className="w-full h-full object-contain" />
           </motion.div>
         </motion.div>
         <p className="font-heading text-3xl font-bold tracking-tight bg-gradient-to-b from-foreground to-foreground/70 bg-clip-text text-transparent">{t('app.name')}</p>
@@ -532,7 +533,7 @@ function CreateAccountScreen({ onNext }) {
 
       <div className="relative pt-10 flex flex-col items-center gap-2">
          <div className="w-14 h-14 rounded-2xl overflow-hidden shadow-lg shadow-primary/30">
-           <img src="https://media.base44.com/images/public/69dfb5d1674e81512478f6f7/a7dcfb0be_transparent-logo.png" alt="Flexyn" className="w-full h-full object-contain" />
+           <img src="{LOGO_URL}" alt="Flexyn" className="w-full h-full object-contain" />
          </div>
          <div className="flex justify-center mt-3 mb-8">
            <LanguagePicker variant="compact" />

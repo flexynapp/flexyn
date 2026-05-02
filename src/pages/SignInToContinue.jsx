@@ -1,4 +1,5 @@
 import { motion } from 'framer-motion';
+import { LOGO_URL } from '@/lib/constants';
 import { LogIn, ArrowRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { base44 } from '@/api/base44Client';
@@ -15,7 +16,7 @@ export default function SignInToContinue() {
       >
         <div className="w-16 h-16 rounded-2xl overflow-hidden shadow-lg shadow-primary/30">
           <img
-            src="https://media.base44.com/images/public/69dfb5d1674e81512478f6f7/a7dcfb0be_transparent-logo.png"
+            src="{LOGO_URL}"
             alt="Flexyn"
             className="w-full h-full object-contain"
           />

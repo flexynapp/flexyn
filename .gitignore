@@ -29,3 +29,6 @@ dist-ssr
 
 .env
 .vite
+
+# Claude Code local config (contains machine-specific dev permissions, not secrets)
+.claude/settings.local.json
