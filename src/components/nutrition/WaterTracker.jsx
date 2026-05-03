@@ -1,16 +1,51 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Droplet, Check } from 'lucide-react';
 import { useLanguage } from '@/lib/LanguageContext';
 
+/* ── Smooth count-up from previous value ──────────────────────────────── */
+function useAnimatedValue(target, duration = 550) {
+  const [display, setDisplay] = useState(target);
+  const displayRef = useRef(target);
+  const timerRef = useRef(null);
+
+  useEffect(() => {
+    const from = displayRef.current;
+    if (target === from) return;
+    if (timerRef.current) clearInterval(timerRef.current);
+
+    const steps = 36;
+    const diff = target - from;
+    let step = 0;
+
+    timerRef.current = setInterval(() => {
+      step++;
+      // Cubic ease-out for a very smooth deceleration
+      const t = step / steps;
+      const eased = 1 - Math.pow(1 - t, 3);
+      const current = step >= steps ? target : from + diff * eased;
+      displayRef.current = current;
+      setDisplay(current);
+      if (step >= steps) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    }, duration / steps);
+
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [target, duration]);
+
+  return display;
+}
+
 export default function WaterTracker({ waterOz = 0, userProfile = {}, waterUnit = 'oz', ozToDisplay = (v) => v }) {
   const { t } = useLanguage();
-  // Calculate daily recommendation in oz with IOM formula
+
   const dailyRecOz = useMemo(() => {
     const weight = userProfile?.weight_lbs;
     const gender = userProfile?.gender || 'male';
-
-    // Derive age from birthday or age field
     let age = 30;
     if (userProfile?.birthday) {
       const birth = new Date(userProfile.birthday);
@@ -21,57 +56,68 @@ export default function WaterTracker({ waterOz = 0, userProfile = {}, waterUnit 
     } else if (userProfile?.age) {
       age = userProfile.age;
     }
-
-    // IOM total water intake baselines (includes water from food ~20%,
-    // so multiply by 0.8 to get drinking water portion)
-    // Male baseline: 125oz total → ~100oz drinking
-    // Female baseline: 91oz total → ~73oz drinking
     let baseOz = gender === 'female' ? 73 : 100;
-
-    // Weight adjustment: IOM assumes ~154 lbs male / 125 lbs female
-    // Scale linearly by weight if available
     if (weight) {
       const referenceWeight = gender === 'female' ? 125 : 154;
-      const weightFactor = weight / referenceWeight;
-      // Cap adjustment to ±30% to avoid extreme values
-      const clampedFactor = Math.min(Math.max(weightFactor, 0.7), 1.3);
+      const clampedFactor = Math.min(Math.max(weight / referenceWeight, 0.7), 1.3);
       baseOz = Math.round(baseOz * clampedFactor);
     }
-
-    // Age adjustment
     if (age < 18) baseOz = Math.round(baseOz * 0.9);
     else if (age > 55) baseOz = Math.round(baseOz * 0.95);
-
-    // Round to nearest 8oz (one glass) for cleaner display
     return Math.round(baseOz / 8) * 8;
   }, [userProfile]);
 
-  // Convert for display
-  const displayWaterOz = Math.round(ozToDisplay(waterOz));
-  const displayDailyRec = waterUnit === 'ml' 
-    ? Math.round(ozToDisplay(dailyRecOz))
-    : waterUnit === 'L'
-    ? parseFloat((ozToDisplay(dailyRecOz)).toFixed(1))
-    : Math.round(ozToDisplay(dailyRecOz));
-
   const progressPercent = Math.min((waterOz / dailyRecOz) * 100, 100);
-  
-  // Droplet grid: always exactly 8 droplets
+  const isGoalReached = progressPercent >= 100;
+
+  // Droplet grid
   const TOTAL_DROPLETS = 8;
   const ozPerDroplet = dailyRecOz / TOTAL_DROPLETS;
   const numFilledDroplets = Math.floor(waterOz / ozPerDroplet);
   const partialFillPercent = ((waterOz % ozPerDroplet) / ozPerDroplet) * 100;
-  const isGoalReached = progressPercent >= 100;
-
-  // SVG circle progress
-  const circumference = 2 * Math.PI * 52;
-  const strokeDashoffset = circumference - (progressPercent / 100) * circumference;
-
   const isEmpty = waterOz === 0;
+
+  // Animated values
+  const animatedOz = useAnimatedValue(ozToDisplay(waterOz));
+  const animatedProgress = useAnimatedValue(progressPercent);
+
+  // Ring geometry — bigger ring
+  const R = 62;
+  const SIZE = 160;
+  const circumference = 2 * Math.PI * R;
+  const strokeDashoffset = circumference - (animatedProgress / 100) * circumference;
+
+  // Detect a new addition to pulse the ring
+  const prevOzRef = useRef(waterOz);
+  const [pulse, setPulse] = useState(false);
+  useEffect(() => {
+    if (waterOz > prevOzRef.current) {
+      setPulse(true);
+      setTimeout(() => setPulse(false), 700);
+    }
+    prevOzRef.current = waterOz;
+  }, [waterOz]);
+
+  const fmt = (v) => {
+    if (waterUnit === 'L') return parseFloat(v).toFixed(2);
+    return Math.round(v);
+  };
+
+  const displayDailyRec = waterUnit === 'ml'
+    ? Math.round(ozToDisplay(dailyRecOz))
+    : waterUnit === 'L'
+    ? parseFloat(ozToDisplay(dailyRecOz).toFixed(1))
+    : Math.round(ozToDisplay(dailyRecOz));
+
+  // Ring color transitions based on progress
+  const ringColor = isGoalReached
+    ? 'hsl(142, 71%, 45%)'   // green
+    : animatedProgress > 66
+    ? 'hsl(198, 93%, 50%)'   // cyan
+    : 'hsl(var(--primary))'; // brand orange
 
   return (
     <div className="space-y-6">
-      {/* Main Layout: Two columns on md+, stacked on mobile */}
       <div className="grid md:grid-cols-2 gap-6">
         {/* LEFT: DROPLET GRID */}
         <div>
@@ -86,14 +132,7 @@ export default function WaterTracker({ waterOz = 0, userProfile = {}, waterUnit 
                 className="flex items-center justify-center py-8"
               >
                 <div className="text-center">
-                  <motion.div
-                    initial={{ scale: 0.5, opacity: 0 }}
-                    animate={{ scale: 1, opacity: 1 }}
-                    transition={{ type: 'spring', stiffness: 300, damping: 20 }}
-                    className="flex justify-center mb-3"
-                  >
-                    <Droplet className="w-12 h-12 text-blue-200" />
-                  </motion.div>
+                  <Droplet className="w-12 h-12 text-blue-200 mx-auto mb-3" />
                   <p className="text-muted-foreground font-medium">{t('nutrition.water.startHydrating')}</p>
                   <p className="text-xs text-muted-foreground mt-1">{t('nutrition.water.logFirst')}</p>
                 </div>
@@ -103,146 +142,149 @@ export default function WaterTracker({ waterOz = 0, userProfile = {}, waterUnit 
                 key="grid"
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.3 }}
                 className="grid grid-cols-4 gap-2"
               >
-              {Array.from({ length: TOTAL_DROPLETS }).map((_, idx) => {
-                const isFilled = idx < numFilledDroplets;
-                const isPartial = idx === numFilledDroplets && partialFillPercent > 0;
-                const isJustFilled = isGoalReached;
-                return (
-                  <motion.div
-                    key={idx}
-                    initial={{ opacity: 0, scale: 0.6 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    transition={{
-                      type: 'spring',
-                      stiffness: 300,
-                      damping: 20,
-                      delay: idx * 0.04,
-                    }}
-                    className="h-12 rounded-xl flex items-center justify-center transition-all relative overflow-hidden"
-                  >
-                    {/* Background (empty state) */}
-                    <div className="absolute inset-0 bg-border/20 border border-dashed border-border/40 rounded-xl" />
-                    
-                    {/* Filled or partial fill */}
+                {Array.from({ length: TOTAL_DROPLETS }).map((_, idx) => {
+                  const isFilled = idx < numFilledDroplets;
+                  const isPartial = idx === numFilledDroplets && partialFillPercent > 0;
+                  return (
                     <motion.div
-                      className="absolute inset-0 bg-gradient-to-br from-blue-400 to-blue-500 rounded-xl"
-                      initial={{ scaleY: 0, opacity: 0 }}
-                      animate={{ 
-                        scaleY: isFilled ? 1 : isPartial ? partialFillPercent / 100 : 0,
-                        opacity: isFilled || isPartial ? 1 : 0
-                      }}
-                      transition={{ duration: 0.8, ease: 'easeOut', type: 'tween' }}
-                      style={{ originY: 1 }}
-                    />
-                  
-                    {/* Icon */}
-                    {(isFilled || isPartial) && (
+                      key={idx}
+                      initial={{ opacity: 0, scale: 0.6 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      transition={{ type: 'spring', stiffness: 300, damping: 20, delay: idx * 0.04 }}
+                      className="h-12 rounded-xl flex items-center justify-center relative overflow-hidden"
+                    >
+                      <div className="absolute inset-0 bg-border/20 border border-dashed border-border/40 rounded-xl" />
                       <motion.div
-                        className="relative z-10"
-                        animate={isJustFilled ? { scale: [1, 1.2, 1] } : {}}
-                        transition={{ duration: 0.6, repeat: isJustFilled ? Infinity : 0 }}
-                      >
-                        <Droplet className="w-5 h-5 text-white" />
-                      </motion.div>
-                    )}
-                  </motion.div>
-                );
-              })}
+                        className="absolute inset-0 bg-gradient-to-br from-blue-400 to-blue-500 rounded-xl"
+                        initial={{ scaleY: 0, opacity: 0 }}
+                        animate={{
+                          scaleY: isFilled ? 1 : isPartial ? partialFillPercent / 100 : 0,
+                          opacity: isFilled || isPartial ? 1 : 0,
+                        }}
+                        transition={{ duration: 0.8, ease: 'easeOut' }}
+                        style={{ originY: 1 }}
+                      />
+                      {(isFilled || isPartial) && (
+                        <Droplet className="relative z-10 w-5 h-5 text-white" />
+                      )}
+                    </motion.div>
+                  );
+                })}
               </motion.div>
             )}
           </AnimatePresence>
         </div>
 
-        {/* RIGHT: CIRCULAR RING PROGRESS + STATS */}
-        <div className="flex flex-col items-center">
-          {/* SVG Circle Ring */}
-          <div className="relative mb-4">
-            <svg width="120" height="120" viewBox="0 0 120 120">
-              {/* Background ring */}
+        {/* RIGHT: ANIMATED RING — single source of truth */}
+        <div className="flex flex-col items-center gap-4">
+          <div className="relative" style={{ width: SIZE, height: SIZE }}>
+            {/* Outer glow pulse on new water added */}
+            <AnimatePresence>
+              {pulse && (
+                <motion.div
+                  key="pulse"
+                  initial={{ opacity: 0.6, scale: 0.95 }}
+                  animate={{ opacity: 0, scale: 1.18 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.65, ease: 'easeOut' }}
+                  className="absolute inset-0 rounded-full"
+                  style={{
+                    background: `radial-gradient(circle, ${ringColor}33 0%, transparent 70%)`,
+                    pointerEvents: 'none',
+                  }}
+                />
+              )}
+            </AnimatePresence>
+
+            <svg
+              width={SIZE}
+              height={SIZE}
+              viewBox={`0 0 ${SIZE} ${SIZE}`}
+              style={{ transform: 'rotate(-90deg)' }}
+            >
+              <defs>
+                <linearGradient id="ringGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stopColor={isGoalReached ? '#22c55e' : '#60a5fa'} />
+                  <stop offset="100%" stopColor={ringColor} />
+                </linearGradient>
+              </defs>
+              {/* Track */}
               <circle
-                cx="60"
-                cy="60"
-                r="52"
+                cx={SIZE / 2} cy={SIZE / 2} r={R}
                 fill="none"
                 stroke="hsl(var(--border))"
-                strokeWidth="10"
+                strokeWidth="11"
               />
-              {/* Progress ring */}
+              {/* Progress arc */}
               <motion.circle
-                cx="60"
-                cy="60"
-                r="52"
+                cx={SIZE / 2} cy={SIZE / 2} r={R}
                 fill="none"
-                stroke="hsl(var(--primary))"
-                strokeWidth="10"
+                stroke="url(#ringGradient)"
+                strokeWidth="11"
                 strokeLinecap="round"
                 strokeDasharray={circumference}
-                initial={{ strokeDashoffset: circumference }}
                 animate={{ strokeDashoffset }}
-                transition={{ duration: 0.8, ease: 'easeOut' }}
+                transition={{ duration: 0.55, ease: [0.22, 1, 0.36, 1] }}
               />
             </svg>
-            {/* Center text */}
+
+            {/* Center content */}
             <div className="absolute inset-0 flex flex-col items-center justify-center">
-              <motion.div
-                initial={{ opacity: 0, scale: 0.8 }}
-                animate={{ opacity: 1, scale: 1 }}
-                transition={{ delay: 0.2, duration: 0.4 }}
-                className="w-full text-center"
+              <motion.span
+                key={fmt(animatedOz)}
+                animate={pulse ? { scale: [1, 1.08, 1] } : {}}
+                transition={{ duration: 0.4 }}
+                className="font-heading font-black tabular-nums leading-none"
+                style={{ fontSize: 38, color: ringColor, transition: 'color 0.6s ease' }}
               >
-                <p className="font-heading font-bold text-2xl text-foreground">
-                  {displayWaterOz}
-                </p>
-                <p className="text-xs text-muted-foreground">{waterUnit}</p>
-                <p className="text-xs text-muted-foreground">
-                  {t('nutrition.macros.of')} {displayDailyRec}
-                </p>
-              </motion.div>
+                {fmt(animatedOz)}
+              </motion.span>
+              <span className="text-xs font-medium text-muted-foreground mt-1">{waterUnit}</span>
+              <span className="text-xs text-muted-foreground">
+                {t('nutrition.macros.of')} {displayDailyRec}
+              </span>
             </div>
           </div>
 
-          {/* Stats Row */}
-          <div className="grid grid-cols-3 gap-2 w-full">
+          {/* Compact stats — goal + progress only */}
+          <div className="grid grid-cols-2 gap-2 w-full">
             {[
-              { label: t('nutrition.water.today'), value: `${displayWaterOz} ${waterUnit}` },
               { label: t('nutrition.water.daily'), value: `${displayDailyRec} ${waterUnit}` },
-              { label: t('progress.title'), value: `${Math.round(progressPercent)}%` },
+              { label: t('progress.title'), value: `${Math.round(animatedProgress)}%` },
             ].map((stat, idx) => (
               <motion.div
                 key={stat.label}
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: idx * 0.1 }}
-                className="bg-secondary/50 rounded-lg px-3 py-2 text-center"
+                transition={{ delay: idx * 0.08 }}
+                className="bg-secondary/50 rounded-xl px-3 py-2 text-center"
               >
                 <p className="text-xs text-muted-foreground font-medium">{stat.label}</p>
-                <p className="font-heading font-bold text-sm text-foreground mt-0.5">
-                  {stat.value}
-                </p>
+                <p className="font-heading font-bold text-sm text-foreground mt-0.5">{stat.value}</p>
               </motion.div>
             ))}
           </div>
         </div>
       </div>
 
-      {/* Goal Achieved State */}
+      {/* Goal reached banner */}
       <AnimatePresence>
-        {progressPercent >= 100 && (
+        {isGoalReached && (
           <motion.div
-            initial={{ opacity: 0, scale: 0.8, y: -8 }}
+            initial={{ opacity: 0, scale: 0.9, y: -8 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.8, y: -8 }}
+            exit={{ opacity: 0, scale: 0.9, y: -8 }}
             transition={{ type: 'spring', stiffness: 300, damping: 20 }}
-            className="flex items-center justify-center gap-2 p-4 rounded-lg bg-green-500/10 border border-green-500/30"
+            className="flex items-center justify-center gap-2 p-4 rounded-xl bg-green-500/10 border border-green-500/30"
           >
-            <motion.div animate={{ scale: [1, 1.2, 1] }} transition={{ duration: 0.6, repeat: Infinity }}>
+            <motion.div animate={{ scale: [1, 1.2, 1] }} transition={{ duration: 0.8, repeat: Infinity }}>
               <Check className="w-5 h-5 text-green-600" />
             </motion.div>
-            <span className="text-sm font-semibold text-green-700">{t('nutrition.water.goalReached')}</span>
+            <span className="text-sm font-semibold text-green-700 dark:text-green-400">
+              {t('nutrition.water.goalReached')}
+            </span>
           </motion.div>
         )}
       </AnimatePresence>
