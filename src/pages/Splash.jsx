@@ -11,17 +11,35 @@ export default function Splash() {
   useEffect(() => {
     const check = async () => {
       const isAuthed = await base44.auth.isAuthenticated();
+
+      // A JWT access token is required for write operations (updateMe, entities).
+      // Cookie-based sessions allow reads but not writes, which causes onboarding
+      // to silently fail on external deployments (e.g. Netlify). If the user is
+      // "authenticated" via cookie only, trigger the proper OAuth flow so they
+      // receive a write-capable JWT token. Base44 auto-approves returning users
+      // instantly, so this is seamless for anyone already logged in.
+      const hasToken = !!(
+        localStorage.getItem('base44_access_token') ||
+        localStorage.getItem('token')
+      );
+
       if (!isAuthed) {
+        // Brand-new visitor — show welcome / sign-up flow.
         navigate('/onboarding', { replace: true });
         return;
       }
+
+      if (!hasToken) {
+        // Cookie session present but no JWT — force OAuth to get a write token.
+        // Base44 redirects back to '/' with ?access_token=... in the URL.
+        base44.auth.redirectToLogin('/');
+        return;
+      }
+
       const user = await base44.auth.me().catch(() => null);
       if (!user || (!user.onboarding_complete && !user.username)) {
-        // Only show onboarding if BOTH onboarding_complete is false AND username is unset.
-        // If the user already has a username they completed onboarding before — send them
-        // to the dashboard even if the onboarding_complete flag got cleared (e.g. account reset).
-        const target = isAuthed ? '/onboarding?step=demographics' : '/onboarding';
-        navigate(target, { replace: true });
+        // Authenticated with a token but onboarding not done yet.
+        navigate('/onboarding?step=demographics', { replace: true });
       } else {
         markReturningUser();
         navigate('/dashboard', { replace: true, state: { fromSplash: true } });
