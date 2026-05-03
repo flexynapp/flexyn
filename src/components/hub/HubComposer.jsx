@@ -7,7 +7,7 @@
 //
 // There is no file picker for posting content — progress photos are the only
 // image source, and they're chosen from the user's saved progress photos.
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
