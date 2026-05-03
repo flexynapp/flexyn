@@ -283,6 +283,15 @@ export default function Nutrition() {
   const [bottleInput, setBottleInput] = useState('');
   const [bottleInputUnit, setBottleInputUnit] = useState('oz');
 
+  // Largest commercial bottle: 5-gallon jug = 640 oz
+  const MAX_BOTTLE_OZ = 640;
+
+  const maxBottleInUnit = (unit) => {
+    if (unit === 'ml') return `${Math.round(MAX_BOTTLE_OZ * 29.5735).toLocaleString()} ml`;
+    if (unit === 'L')  return `${(MAX_BOTTLE_OZ * 0.0295735).toFixed(1)} L`;
+    return `${MAX_BOTTLE_OZ} oz`;
+  };
+
   const handleSaveBottle = () => {
     const amount = Number(bottleInput);
     if (isNaN(amount) || amount <= 0) {
@@ -290,6 +299,10 @@ export default function Nutrition() {
       return;
     }
     const convertedOz = displayToOz(amount, bottleInputUnit);
+    if (convertedOz > MAX_BOTTLE_OZ) {
+      toast.error(`Max bottle size is ${maxBottleInUnit(bottleInputUnit)} (5-gallon jug).`);
+      return;
+    }
     setCustomBottles([...customBottles, {
       id: Date.now().toString(),
       label: `${bottleInput} ${bottleInputUnit}`,
@@ -592,10 +605,12 @@ export default function Nutrition() {
               <Input
                 type="number"
                 min="1"
+                max={bottleInputUnit === 'ml' ? Math.round(MAX_BOTTLE_OZ * 29.5735) : bottleInputUnit === 'L' ? (MAX_BOTTLE_OZ * 0.0295735).toFixed(1) : MAX_BOTTLE_OZ}
                 placeholder="e.g. 32"
                 value={bottleInput}
                 onChange={e => setBottleInput(e.target.value)}
               />
+              <p className="text-xs text-muted-foreground mt-1">Max: {maxBottleInUnit(bottleInputUnit)}</p>
             </div>
             <div>
               <label className="text-sm font-medium mb-2 block">{t('nutrition.unit')}</label>
