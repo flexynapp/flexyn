@@ -22,6 +22,7 @@ export default function RegimenForm({ initial, onSubmit, onCancel, userProfile =
 
   const [name, setName] = useState(initial?.name || '');
   const [description, setDescription] = useState(initial?.description || '');
+  const [isPublic, setIsPublic] = useState(initial?.is_public || false);
   const guard = useMultiProfanityGuard();
   const [exercises, setExercises] = useState(
     (initial?.exercises || []).map(ex => ({
@@ -120,7 +121,7 @@ export default function RegimenForm({ initial, onSubmit, onCancel, userProfile =
       target_sets: Math.min(maxSetsPerExercise, Math.max(1, Number(ex.target_sets))),
       target_reps: Math.min(getMaxRealisticReps(ex.name, 0, userProfile), Math.max(1, Number(ex.target_reps))),
     }));
-    onSubmit({ name, description, exercises: normalised });
+    onSubmit({ name, description, exercises: normalised, is_public: isPublic });
   };
 
   return (
@@ -245,6 +246,23 @@ export default function RegimenForm({ initial, onSubmit, onCancel, userProfile =
           </div>
         </AnimatePresence>
       </div>
+
+      {/* Public template toggle */}
+      <button
+        type="button"
+        onClick={() => setIsPublic(p => !p)}
+        className={`w-full flex items-center justify-between p-3 rounded-xl border transition-colors ${
+          isPublic ? 'border-primary/40 bg-primary/5' : 'border-border bg-muted/30'
+        }`}
+      >
+        <div className="text-left">
+          <p className="font-semibold text-sm">{t('regimens.isPublic')}</p>
+          <p className="text-xs text-muted-foreground mt-0.5">{t('regimens.isPublicDesc')}</p>
+        </div>
+        <div className={`relative w-10 h-6 rounded-full transition-colors shrink-0 ${isPublic ? 'bg-primary' : 'bg-muted-foreground/30'}`}>
+          <span className={`absolute top-1 w-4 h-4 rounded-full bg-white shadow transition-all ${isPublic ? 'left-5' : 'left-1'}`} />
+        </div>
+      </button>
 
       <div className="flex justify-end gap-3 pt-2">
         <Button type="button" variant="outline" onClick={onCancel}>{t('common.cancel')}</Button>

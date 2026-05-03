@@ -7,14 +7,17 @@ import { useLanguage } from '@/lib/LanguageContext';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
-import { Plus, Pencil, Trash2, Dumbbell, Eye, ChevronUp, LayoutTemplate } from 'lucide-react';
+import { Plus, Pencil, Trash2, Dumbbell, Eye, ChevronUp, LayoutTemplate, Globe, Lock, Send } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Textarea } from '@/components/ui/textarea';
 import { motion, AnimatePresence } from 'framer-motion';
 import RegimenForm from '@/components/regimens/RegimenForm';
 import RegimenDetailView from '@/components/regimens/RegimenDetailView';
 import TemplatesModal from '@/components/workout/TemplatesModal';
+import RegimenTemplateStore from '@/components/regimens/RegimenTemplateStore';
+import * as hubPosts from '@/lib/data/hubPosts';
 
 export default function RegimensSection({ onStartRegimen }) {
   const { t } = useLanguage();
@@ -22,6 +25,11 @@ export default function RegimensSection({ onStartRegimen }) {
   const [editing, setEditing] = useState(null);
   const [expandedId, setExpandedId] = useState(null);
   const [templatesOpen, setTemplatesOpen] = useState(false);
+  const [storeOpen, setStoreOpen] = useState(false);
+  const [sharingRegimen, setSharingRegimen] = useState(null); // regimen being shared to Hub
+  const [shareCaption, setShareCaption] = useState('');
+  const [sharePrivacy, setSharePrivacy] = useState('public');
+  const [sharePosting, setSharePosting] = useState(false);
 
   const toggleExpand = (id) => setExpandedId(prev => prev === id ? null : id);
   const queryClient = useQueryClient();
@@ -122,12 +130,72 @@ export default function RegimensSection({ onStartRegimen }) {
     setEditing(null);
   };
 
+  const togglePublic = (r) => {
+    const next = !r.is_public;
+    updateMutation.mutate(
+      { id: r.id, data: { is_public: next } },
+      {
+        onSuccess: () => toast.success(next ? t('regimens.toast.madePublic') : t('regimens.toast.madePrivate')),
+      }
+    );
+  };
+
+  const openShare = (r) => {
+    setSharingRegimen(r);
+    setShareCaption('');
+    setSharePrivacy('public');
+  };
+
+  const handleShareToHub = async () => {
+    if (!sharingRegimen || !user?.email) return;
+    setSharePosting(true);
+    try {
+      const exerciseCount = sharingRegimen.exercises?.length || 0;
+      const body = shareCaption.trim() ||
+        `Check out my regimen — ${sharingRegimen.name} · ${exerciseCount} exercises`;
+      await hubPosts.create({
+        author_email: user.email,
+        author_name: user.username || user.email.split('@')[0],
+        author_avatar_url: user.avatar_url || null,
+        post_type: 'regimen',
+        body,
+        privacy: sharePrivacy,
+        like_count: 0,
+        dislike_count: 0,
+        comment_count: 0,
+        linked_entity_type: 'regimen',
+        linked_entity_id: sharingRegimen.id,
+        linked_entity_snapshot: {
+          name: sharingRegimen.name,
+          description: sharingRegimen.description || '',
+          exercises: (sharingRegimen.exercises || []).slice(0, 10).map(ex => ({
+            exercise_name: ex.name || ex.exercise_name,
+            target_sets: ex.target_sets,
+            target_reps: ex.target_reps,
+          })),
+        },
+      });
+      toast.success(t('regimens.toast.shared'));
+      setSharingRegimen(null);
+    } catch (err) {
+      console.error('Share failed:', err);
+      toast.error(t('common.error'));
+    } finally {
+      setSharePosting(false);
+    }
+  };
+
   return (
     <div className="w-full space-y-4">
-      <div className="flex gap-2">
+      <div className="flex gap-2 flex-wrap">
         <motion.div whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.95 }} transition={{ type: 'spring', stiffness: 400, damping: 18 }}>
           <Button variant="outline" onClick={() => setTemplatesOpen(true)}>
             <LayoutTemplate className="w-4 h-4 mr-2" /> {t('workout.templates')}
+          </Button>
+        </motion.div>
+        <motion.div whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.95 }} transition={{ type: 'spring', stiffness: 400, damping: 18 }}>
+          <Button variant="outline" onClick={() => setStoreOpen(true)}>
+            <Globe className="w-4 h-4 mr-2" /> {t('regimens.browseTemplates')}
           </Button>
         </motion.div>
         <motion.div whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.95 }} transition={{ type: 'spring', stiffness: 400, damping: 18 }}>
@@ -185,6 +253,23 @@ export default function RegimensSection({ onStartRegimen }) {
                   <motion.div whileHover={{ scale: 1.07 }} whileTap={{ scale: 0.93 }} transition={{ type: 'spring', stiffness: 420, damping: 18 }}>
                     <Button variant="ghost" size="icon" onClick={() => openEdit(r)}>
                       <Pencil className="w-4 h-4" />
+                    </Button>
+                  </motion.div>
+                  <motion.div whileHover={{ scale: 1.07 }} whileTap={{ scale: 0.93 }} transition={{ type: 'spring', stiffness: 420, damping: 18 }}>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      title={r.is_public ? t('regimens.makePrivate') : t('regimens.makePublic')}
+                      onClick={() => togglePublic(r)}
+                    >
+                      {r.is_public
+                        ? <Globe className="w-4 h-4 text-primary" />
+                        : <Lock className="w-4 h-4 text-muted-foreground" />}
+                    </Button>
+                  </motion.div>
+                  <motion.div whileHover={{ scale: 1.07 }} whileTap={{ scale: 0.93 }} transition={{ type: 'spring', stiffness: 420, damping: 18 }}>
+                    <Button variant="ghost" size="icon" title={t('regimens.shareToHub')} onClick={() => openShare(r)}>
+                      <Send className="w-4 h-4" />
                     </Button>
                   </motion.div>
                   <AlertDialog>
@@ -248,6 +333,57 @@ export default function RegimensSection({ onStartRegimen }) {
           exercises: template.exercises,
         })}
       />
+
+      <RegimenTemplateStore open={storeOpen} onClose={() => setStoreOpen(false)} />
+
+      {/* Share to Hub dialog */}
+      <Dialog open={!!sharingRegimen} onOpenChange={() => setSharingRegimen(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="font-heading">{t('regimens.shareToHub')}</DialogTitle>
+          </DialogHeader>
+          {sharingRegimen && (
+            <div className="space-y-4">
+              <div className="p-3 rounded-xl bg-muted/50 border">
+                <p className="font-semibold text-sm">{sharingRegimen.name}</p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {sharingRegimen.exercises?.length || 0} {t('regimens.exercises')}
+                </p>
+              </div>
+              <Textarea
+                placeholder={t('regimens.shareToHubCaption')}
+                value={shareCaption}
+                onChange={e => setShareCaption(e.target.value)}
+                rows={3}
+                className="resize-none"
+              />
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button" size="sm"
+                  variant={sharePrivacy === 'public' ? 'default' : 'outline'}
+                  onClick={() => setSharePrivacy('public')} className="gap-1"
+                >
+                  <Globe className="w-3 h-3" /> {t('hub.privacy.public')}
+                </Button>
+                <Button
+                  type="button" size="sm"
+                  variant={sharePrivacy === 'followers-only' ? 'default' : 'outline'}
+                  onClick={() => setSharePrivacy('followers-only')} className="gap-1"
+                >
+                  <Lock className="w-3 h-3" /> {t('hub.privacy.followersOnly')}
+                </Button>
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button variant="ghost" size="sm" onClick={() => setSharingRegimen(null)}>{t('common.cancel')}</Button>
+                <Button size="sm" onClick={handleShareToHub} disabled={sharePosting} className="gap-1">
+                  <Send className="w-3 h-3" />
+                  {sharePosting ? t('common.posting') : t('hub.post')}
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={showForm} onOpenChange={closeForm}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">

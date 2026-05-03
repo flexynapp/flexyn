@@ -26,6 +26,33 @@ export const update = (id, data) => {
 };
 export const remove = (id) => base44.entities.Regimen.delete(id);
 
+/** Fetch all public templates from any user, sorted by copy count then date. */
+export const listPublic = async (limit = 100) => {
+  const rows = await base44.entities.Regimen.filter({ is_public: true }, '-copy_count', limit).catch(() => []);
+  return rows;
+};
+
+/**
+ * Copy a public template into the current user's regimen library.
+ * Increments the original's copy_count and records authorship on the copy.
+ */
+export const copyTemplate = async (original, user) => {
+  const copy = await base44.entities.Regimen.create({
+    created_by: user.email,
+    name: original.name,
+    description: original.description || '',
+    exercises: original.exercises || [],
+    is_public: false,
+    copy_count: 0,
+    original_template_id: original.id,
+    original_author_username: original.author_username || original.created_by?.split('@')[0] || 'Unknown',
+  });
+  // Bump the source template's copy count (cross-user write — Base44 allows this)
+  const newCount = (Number(original.copy_count) || 0) + 1;
+  await base44.entities.Regimen.update(original.id, { copy_count: newCount }).catch(() => {});
+  return copy;
+};
+
 export const purgeForUser = async (email) => {
   if (!email) return;
   const batch = await base44.entities.Regimen.filter({ created_by: email }).catch(() => []);
