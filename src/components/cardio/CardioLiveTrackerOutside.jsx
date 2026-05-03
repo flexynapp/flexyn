@@ -110,32 +110,70 @@ export default function CardioLiveTrackerOutside({ mode, onCancel, onSaved, user
   }, []);
 
   // ── Fetch weather on mount ──
+  // Strategy: fire GPS and IP-based location simultaneously. GPS wins if it
+  // arrives first (more accurate). IP location fires after 2s as a fallback so
+  // weather is always shown even when the user hasn't granted GPS permission.
   useEffect(() => {
-    if (!navigator.geolocation) return;
-    navigator.geolocation.getCurrentPosition(async (pos) => {
+    const tempUnit = distanceUnit === 'mi' ? 'fahrenheit' : 'celsius';
+    let priority = 0; // higher wins — GPS(2) beats IP(1)
+
+    const applyWeather = (data, p) => {
+      if (p <= priority) return; // lower-priority result arrived late, discard
+      priority = p;
+      if (data?.current) {
+        setWeather({
+          temp: Math.round(data.current.temperature_2m),
+          feels: Math.round(data.current.apparent_temperature),
+          code: data.current.weather_code,
+          wind: Math.round(data.current.wind_speed_10m),
+          uv: data.current.uv_index != null ? Math.round(data.current.uv_index) : null,
+          unit: tempUnit === 'fahrenheit' ? '°F' : '°C',
+          speedUnit: distanceUnit === 'mi' ? 'mph' : 'km/h',
+        });
+      }
+    };
+
+    const fetchWeather = async (lat, lng, p) => {
       try {
-        const { latitude, longitude } = pos.coords;
-        const tempUnit = distanceUnit === 'mi' ? 'fahrenheit' : 'celsius';
         const url = `https://api.open-meteo.com/v1/forecast`
-          + `?latitude=${latitude}&longitude=${longitude}`
+          + `?latitude=${lat}&longitude=${lng}`
           + `&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,uv_index`
           + `&temperature_unit=${tempUnit}`
           + `&wind_speed_unit=${distanceUnit === 'mi' ? 'mph' : 'kmh'}`;
         const res = await fetch(url);
-        const data = await res.json();
-        if (data?.current) {
-          setWeather({
-            temp: Math.round(data.current.temperature_2m),
-            feels: Math.round(data.current.apparent_temperature),
-            code: data.current.weather_code,
-            wind: Math.round(data.current.wind_speed_10m),
-            uv: data.current.uv_index != null ? Math.round(data.current.uv_index) : null,
-            unit: tempUnit === 'fahrenheit' ? '°F' : '°C',
-            speedUnit: distanceUnit === 'mi' ? 'mph' : 'km/h',
-          });
-        }
+        applyWeather(await res.json(), p);
       } catch {}
-    }, () => {}, { enableHighAccuracy: false, timeout: 8000 });
+    };
+
+    const fetchWeatherByIp = async (p = 1) => {
+      try {
+        const res = await fetch('https://ipapi.co/json/');
+        const d = await res.json();
+        if (d?.latitude) await fetchWeather(d.latitude, d.longitude, p);
+      } catch {}
+    };
+
+    // Kick off IP fallback after 2s — enough time for GPS to answer first
+    const ipTimer = setTimeout(() => fetchWeatherByIp(1), 2000);
+
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          clearTimeout(ipTimer);
+          fetchWeather(pos.coords.latitude, pos.coords.longitude, 2);
+        },
+        () => {
+          clearTimeout(ipTimer);
+          fetchWeatherByIp(1);
+        },
+        { enableHighAccuracy: false, timeout: 6000 }
+      );
+    } else {
+      clearTimeout(ipTimer);
+      fetchWeatherByIp(1);
+    }
+
+    return () => clearTimeout(ipTimer);
   }, [distanceUnit]);
 
   // ── Auto-snapshot every 10s while active ──
