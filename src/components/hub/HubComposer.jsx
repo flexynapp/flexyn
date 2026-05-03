@@ -13,7 +13,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   X, Send, Globe2, Lock,
   Dumbbell, Activity, Apple, Target, Trophy, ListChecks, Image as ImageIcon, BarChart3,
-  ArrowLeft, Loader2, MessageSquare, ChevronDown, Camera, XCircle,
+  ArrowLeft, Loader2, MessageSquare, ChevronDown, Camera, XCircle, PenLine,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { format, parseISO } from 'date-fns';
@@ -208,6 +208,9 @@ export default function HubComposer({ onClose }) {
   const [privacy, setPrivacy] = useState('public');
   const [posting, setPosting] = useState(false);
 
+  // Custom meal form (for meal posts without a prior log)
+  const [customMeal, setCustomMeal] = useState({ food_name: '', calories: '', protein_g: '', carbs_g: '', fat_g: '' });
+
   // Optional image attachment for meal posts
   const [mealImageFile, setMealImageFile] = useState(null);
   const [mealImagePreview, setMealImagePreview] = useState(null);
@@ -284,6 +287,15 @@ export default function HubComposer({ onClose }) {
   };
 
   const handlePick = (kind, item = null) => {
+    // null item for meal = open custom meal form
+    if (kind === 'meal' && !item) {
+      setSelected({ kind: 'meal', item: null, summary: null });
+      setCustomMeal({ food_name: '', calories: '', protein_g: '', carbs_g: '', fat_g: '' });
+      setBody('');
+      clearMealImage();
+      setStep('meal_compose');
+      return;
+    }
     setSelected({
       kind,
       item,
@@ -301,6 +313,27 @@ export default function HubComposer({ onClose }) {
   // was bypassed (paste, autofill, programmatic injection), this catches it.
   const handlePost = async () => {
     if (!selected) return;
+
+    // Custom meal post: food_name is required
+    if (selected.kind === 'meal' && !selected.item) {
+      if (!customMeal.food_name.trim()) {
+        toast.error('Please enter a meal name.');
+        return;
+      }
+      if (containsProfanity(customMeal.food_name)) {
+        toast.error(t('hub.composer.profanityError'));
+        return;
+      }
+      // Finalise the item so buildSnapshot picks it up
+      selected.item = {
+        food_name: customMeal.food_name.trim(),
+        calories: parseFloat(customMeal.calories) || null,
+        protein_g: parseFloat(customMeal.protein_g) || null,
+        carbs_g: parseFloat(customMeal.carbs_g) || null,
+        fat_g: parseFloat(customMeal.fat_g) || null,
+      };
+      selected.summary = summarize.meal(selected.item);
+    }
 
     // Status posts: body is mandatory and is the entire post.
     if (selected.kind === 'status') {
@@ -458,15 +491,17 @@ export default function HubComposer({ onClose }) {
           </Section>
         )}
 
-        {recentMeals.length > 0 && (
-          <Section title={t('hub.share.meal')} count={recentMeals.length}>
-            {recentMeals.map(m => (
-              <PickCard key={m.id} kind="meal" onClick={() => handlePick('meal', m)}
-                title={m.food_name}
-                subtitle={summarize.meal(m)} />
-            ))}
-          </Section>
-        )}
+        <Section title={t('hub.share.meal')} count={recentMeals.length || undefined}>
+          <PickCard kind="meal" onClick={() => handlePick('meal', null)}
+            title="Share a meal"
+            subtitle="Enter macros + optional photo"
+            highlight />
+          {recentMeals.map(m => (
+            <PickCard key={m.id} kind="meal" onClick={() => handlePick('meal', m)}
+              title={m.food_name}
+              subtitle={summarize.meal(m)} />
+          ))}
+        </Section>
 
         {completedGoals.length > 0 && (
           <Section title={t('hub.share.goal')} count={completedGoals.length}>
@@ -518,6 +553,77 @@ export default function HubComposer({ onClose }) {
             subtitle={summarize.stats(statsSnapshot)} />
         </Section>
       </div>
+    </div>
+  );
+
+  // ── Rendering: custom meal compose step ──
+  const renderMealCompose = () => (
+    <div className="flex-1 flex flex-col px-4 pb-4">
+      <div className="mb-3 flex items-center gap-2 text-xs text-muted-foreground">
+        <Apple className="w-3.5 h-3.5 text-green-500" />
+        Share a meal with your community
+      </div>
+
+      {/* Meal name */}
+      <label className="text-xs font-semibold text-muted-foreground mb-1 block">Meal name *</label>
+      <input
+        value={customMeal.food_name}
+        onChange={e => setCustomMeal(p => ({ ...p, food_name: e.target.value }))}
+        placeholder="e.g. Grilled Chicken & Rice Bowl"
+        maxLength={80}
+        className="w-full px-3 py-2 rounded-lg border border-border bg-secondary/40 text-sm mb-3 focus:outline-none focus:ring-2 focus:ring-primary/40"
+      />
+
+      {/* Macros row */}
+      <label className="text-xs font-semibold text-muted-foreground mb-1.5 block">Macros (optional)</label>
+      <div className="grid grid-cols-4 gap-2 mb-3">
+        {[
+          { key: 'calories',  label: 'Calories', unit: 'kcal', color: 'text-orange-600' },
+          { key: 'protein_g', label: 'Protein',  unit: 'g',    color: 'text-red-600' },
+          { key: 'carbs_g',   label: 'Carbs',    unit: 'g',    color: 'text-blue-600' },
+          { key: 'fat_g',     label: 'Fat',      unit: 'g',    color: 'text-yellow-600' },
+        ].map(f => (
+          <div key={f.key} className="flex flex-col">
+            <span className={`text-[10px] font-medium mb-1 ${f.color}`}>{f.label}</span>
+            <input
+              type="number"
+              min="0"
+              placeholder="0"
+              value={customMeal[f.key]}
+              onChange={e => setCustomMeal(p => ({ ...p, [f.key]: e.target.value }))}
+              className="w-full px-2 py-1.5 rounded-lg border border-border bg-secondary/40 text-sm text-center font-heading font-bold focus:outline-none focus:ring-2 focus:ring-primary/40"
+            />
+            <span className="text-[9px] text-muted-foreground text-center mt-0.5">{f.unit}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Photo */}
+      {mealImagePreview ? (
+        <div className="relative rounded-xl overflow-hidden border border-border mb-3">
+          <img src={mealImagePreview} alt="Meal" className="w-full max-h-48 object-cover" />
+          <button onClick={clearMealImage} className="absolute top-2 right-2 p-1.5 rounded-full bg-black/60 text-white hover:bg-black/80">
+            <XCircle className="w-4 h-4" />
+          </button>
+        </div>
+      ) : (
+        <button type="button" onClick={() => mealImageInputRef.current?.click()}
+          className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border-2 border-dashed border-border text-xs text-muted-foreground hover:border-primary/50 hover:text-foreground transition-colors mb-3">
+          <Camera className="w-4 h-4" /> Add a photo of your meal (optional)
+        </button>
+      )}
+      <input ref={mealImageInputRef} type="file" accept="image/*" className="hidden" onChange={handleMealImagePick} />
+
+      {/* Caption */}
+      <textarea
+        value={body}
+        onChange={e => bodyGuard.handleChange(e.target.value)}
+        placeholder="Add a caption… (optional)"
+        maxLength={500}
+        rows={2}
+        className="w-full p-3 bg-secondary/40 border border-border rounded-lg text-sm resize-none focus:outline-none focus:ring-2 focus:ring-primary/40 mb-3"
+      />
+      {renderPrivacyButtons()}
     </div>
   );
 
@@ -646,6 +752,7 @@ export default function HubComposer({ onClose }) {
 
   const onPickStep = step === 'pick';
   const isStatusStep = step === 'status_compose';
+  const isMealComposeStep = step === 'meal_compose';
 
   return (
     <AnimatePresence>
@@ -677,6 +784,8 @@ export default function HubComposer({ onClose }) {
                   ? t('hub.composer.pickActivity')
                   : isStatusStep
                   ? t('hub.composer.statusTitle')
+                  : isMealComposeStep
+                  ? 'Share a Meal'
                   : t('hub.composer.title')}
               </h2>
               {onPickStep && (
@@ -694,6 +803,8 @@ export default function HubComposer({ onClose }) {
             ? renderPicker()
             : isStatusStep
             ? renderStatusCompose()
+            : isMealComposeStep
+            ? renderMealCompose()
             : renderCompose()}
 
           {!onPickStep && (
