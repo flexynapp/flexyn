@@ -5,12 +5,13 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card } from '@/components/ui/card';
 import { motion, AnimatePresence } from 'framer-motion';
-import { TrendingDown, Minus, TrendingUp, Calendar, Activity, Check, ArrowRight, ArrowLeft, AlertTriangle } from 'lucide-react';
+import { TrendingDown, Minus, TrendingUp, Calendar, Activity, Check, ArrowRight, ArrowLeft, AlertTriangle, ShieldCheck } from 'lucide-react';
 import { format, addDays } from 'date-fns';
 import { base44 } from '@/api/base44Client';
 import { toast } from 'sonner';
 import { useLanguage } from '@/lib/LanguageContext';
 import { useWeightUnit } from '@/lib/WeightUnitContext';
+import { DIETARY_RESTRICTIONS, persistRestrictions } from '@/lib/nutritionPlans';
 
 const GOALS = [
   { id: 'lose',     icon: TrendingDown, color: 'text-blue-500',   bg: 'bg-blue-500/10',   titleKey: 'nutritionOnboarding.goal.lose.title',     descKey: 'nutritionOnboarding.goal.lose.desc' },
@@ -94,7 +95,14 @@ export default function NutritionOnboardingModal({ open, userProfile, onComplete
   const [targetWeight, setTargetWeight] = useState('');
   const [targetDate, setTargetDate] = useState(format(addDays(new Date(), 90), 'yyyy-MM-dd'));
   const [activity, setActivity] = useState('moderate');
+  const [dietaryRestrictions, setDietaryRestrictions] = useState([]);
   const [saving, setSaving] = useState(false);
+
+  const toggleRestriction = (id) => {
+    setDietaryRestrictions(prev =>
+      prev.includes(id) ? prev.filter(r => r !== id) : [...prev, id]
+    );
+  };
 
   const todayStr = format(new Date(), 'yyyy-MM-dd');
   const minDateStr = format(addDays(new Date(), 7), 'yyyy-MM-dd'); // require at least 1 week out
@@ -128,10 +136,11 @@ export default function NutritionOnboardingModal({ open, userProfile, onComplete
       return true;
     }
     if (step === 2) return !!activity;
+    if (step === 3) return true; // restrictions are optional
     return true;
   })();
 
-  const totalSteps = 4; // 0=goal, 1=target, 2=activity, 3=preview
+  const totalSteps = 5; // 0=goal, 1=target, 2=activity, 3=restrictions, 4=preview
   const next = () => setStep(s => Math.min(s + 1, totalSteps - 1));
   const back = () => setStep(s => Math.max(s - 1, 0));
 
@@ -151,6 +160,10 @@ export default function NutritionOnboardingModal({ open, userProfile, onComplete
       } else {
         payload.target_weight_lbs = null;
         payload.target_date = null;
+      }
+      if (dietaryRestrictions.length > 0) {
+        payload.dietary_restrictions = dietaryRestrictions;
+        persistRestrictions(dietaryRestrictions);
       }
       await base44.auth.updateMe(payload);
       toast.success(t('nutritionOnboarding.toast.saved'));
@@ -305,10 +318,51 @@ export default function NutritionOnboardingModal({ open, userProfile, onComplete
               </motion.div>
             )}
 
-            {/* STEP 3 — Preview */}
-            {step === 3 && preview && (
+            {/* STEP 3 — Dietary Restrictions */}
+            {step === 3 && (
               <motion.div
                 key="step3"
+                initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}
+                transition={{ duration: 0.2 }}
+              >
+                <h2 className="font-heading font-bold text-xl mb-1 flex items-center gap-2">
+                  <ShieldCheck className="w-5 h-5" />
+                  Dietary Restrictions
+                </h2>
+                <p className="text-sm text-muted-foreground mb-1">Select all that apply — or skip if you have none.</p>
+                <p className="text-xs text-muted-foreground mb-4">We'll filter nutrition plans that don't fit your restrictions.</p>
+                <div className="grid grid-cols-2 gap-2">
+                  {DIETARY_RESTRICTIONS.map(r => {
+                    const selected = dietaryRestrictions.includes(r.id);
+                    return (
+                      <motion.button
+                        key={r.id}
+                        onClick={() => toggleRestriction(r.id)}
+                        whileTap={{ scale: 0.97 }}
+                        className={`flex items-center gap-2.5 p-3 rounded-xl border-2 text-left transition-colors ${selected ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/40'}`}
+                      >
+                        <span className="text-xl leading-none shrink-0">{r.emoji}</span>
+                        <div className="min-w-0 flex-1">
+                          <p className="font-heading font-semibold text-xs leading-tight">{r.label}</p>
+                          <p className="text-[10px] text-muted-foreground mt-0.5 leading-tight">{r.desc}</p>
+                        </div>
+                        {selected && <Check className="w-4 h-4 text-primary shrink-0" />}
+                      </motion.button>
+                    );
+                  })}
+                </div>
+                {dietaryRestrictions.length > 0 && (
+                  <p className="text-xs text-primary font-medium mt-3 text-center">
+                    {dietaryRestrictions.length} restriction{dietaryRestrictions.length > 1 ? 's' : ''} selected
+                  </p>
+                )}
+              </motion.div>
+            )}
+
+            {/* STEP 4 — Preview */}
+            {step === 4 && preview && (
+              <motion.div
+                key="step4"
                 initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}
                 transition={{ duration: 0.2 }}
               >

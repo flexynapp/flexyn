@@ -110,31 +110,70 @@ export default function CardioLiveTrackerOutside({ mode, onCancel, onSaved, user
   }, []);
 
   // ── Fetch weather on mount ──
+  // Strategy: fire GPS and IP-based location simultaneously. GPS wins if it
+  // arrives first (more accurate). IP location fires after 2s as a fallback so
+  // weather is always shown even when the user hasn't granted GPS permission.
   useEffect(() => {
-    if (!navigator.geolocation) return;
-    navigator.geolocation.getCurrentPosition(async (pos) => {
+    const tempUnit = distanceUnit === 'mi' ? 'fahrenheit' : 'celsius';
+    let priority = 0; // higher wins — GPS(2) beats IP(1)
+
+    const applyWeather = (data, p) => {
+      if (p <= priority) return; // lower-priority result arrived late, discard
+      priority = p;
+      if (data?.current) {
+        setWeather({
+          temp: Math.round(data.current.temperature_2m),
+          feels: Math.round(data.current.apparent_temperature),
+          code: data.current.weather_code,
+          wind: Math.round(data.current.wind_speed_10m),
+          uv: data.current.uv_index != null ? Math.round(data.current.uv_index) : null,
+          unit: tempUnit === 'fahrenheit' ? '°F' : '°C',
+          speedUnit: distanceUnit === 'mi' ? 'mph' : 'km/h',
+        });
+      }
+    };
+
+    const fetchWeather = async (lat, lng, p) => {
       try {
-        const { latitude, longitude } = pos.coords;
-        const tempUnit = distanceUnit === 'mi' ? 'fahrenheit' : 'celsius';
         const url = `https://api.open-meteo.com/v1/forecast`
-          + `?latitude=${latitude}&longitude=${longitude}`
-          + `&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m`
+          + `?latitude=${lat}&longitude=${lng}`
+          + `&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,uv_index`
           + `&temperature_unit=${tempUnit}`
           + `&wind_speed_unit=${distanceUnit === 'mi' ? 'mph' : 'kmh'}`;
         const res = await fetch(url);
-        const data = await res.json();
-        if (data?.current) {
-          setWeather({
-            temp: Math.round(data.current.temperature_2m),
-            feels: Math.round(data.current.apparent_temperature),
-            code: data.current.weather_code,
-            wind: Math.round(data.current.wind_speed_10m),
-            unit: tempUnit === 'fahrenheit' ? '°F' : '°C',
-            speedUnit: distanceUnit === 'mi' ? 'mph' : 'km/h',
-          });
-        }
+        applyWeather(await res.json(), p);
       } catch {}
-    }, () => {}, { enableHighAccuracy: false, timeout: 8000 });
+    };
+
+    const fetchWeatherByIp = async (p = 1) => {
+      try {
+        const res = await fetch('https://ipapi.co/json/');
+        const d = await res.json();
+        if (d?.latitude) await fetchWeather(d.latitude, d.longitude, p);
+      } catch {}
+    };
+
+    // Kick off IP fallback after 2s — enough time for GPS to answer first
+    const ipTimer = setTimeout(() => fetchWeatherByIp(1), 2000);
+
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          clearTimeout(ipTimer);
+          fetchWeather(pos.coords.latitude, pos.coords.longitude, 2);
+        },
+        () => {
+          clearTimeout(ipTimer);
+          fetchWeatherByIp(1);
+        },
+        { enableHighAccuracy: false, timeout: 6000 }
+      );
+    } else {
+      clearTimeout(ipTimer);
+      fetchWeatherByIp(1);
+    }
+
+    return () => clearTimeout(ipTimer);
   }, [distanceUnit]);
 
   // ── Auto-snapshot every 10s while active ──
@@ -499,19 +538,40 @@ export default function CardioLiveTrackerOutside({ mode, onCancel, onSaved, user
         </h2>
         <p className="text-sm text-muted-foreground mb-8">{t('cardio.env.outside')}</p>
         {weather && (
-          <Card className="p-3 mb-4">
-            <div className="flex items-center gap-3">
-              <span className="text-2xl">{weatherEmoji(weather.code)}</span>
-              <div className="flex-1 text-left">
-                <p className="text-sm font-medium">
-                  {weather.temp}{weather.unit}
-                  <span className="text-muted-foreground text-xs ml-2">
-                    ({t('cardio.weather.feelsLike')} {weather.feels}{weather.unit})
-                  </span>
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  💨 {weather.wind} {weather.speedUnit}
-                </p>
+          <Card className="p-4 mb-4 border-border/60">
+            <div className="flex items-start gap-3">
+              <span className="text-3xl mt-0.5">{weatherEmoji(weather.code)}</span>
+              <div className="flex-1 text-left space-y-1.5">
+                <div className="flex items-center flex-wrap gap-x-3 gap-y-0.5">
+                  <p className="text-sm font-semibold">
+                    {weather.temp}{weather.unit}
+                    <span className="text-muted-foreground text-xs font-normal ml-1.5">
+                      ({t('cardio.weather.feelsLike')} {weather.feels}{weather.unit})
+                    </span>
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    💨 {weather.wind} {weather.speedUnit}
+                  </p>
+                </div>
+                {weather.uv != null && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-muted-foreground">UV Index</span>
+                    <span className={`inline-flex items-center gap-1 text-xs font-bold px-2 py-0.5 rounded-full ${
+                      weather.uv <= 2  ? 'bg-green-500/15 text-green-600 dark:text-green-400' :
+                      weather.uv <= 5  ? 'bg-yellow-400/20 text-yellow-600 dark:text-yellow-400' :
+                      weather.uv <= 7  ? 'bg-orange-500/15 text-orange-600 dark:text-orange-400' :
+                      weather.uv <= 10 ? 'bg-red-500/15 text-red-600 dark:text-red-400' :
+                                         'bg-purple-500/15 text-purple-600 dark:text-purple-400'
+                    }`}>
+                      ☀ {weather.uv} — {
+                        weather.uv <= 2  ? 'Low' :
+                        weather.uv <= 5  ? 'Moderate' :
+                        weather.uv <= 7  ? 'High' :
+                        weather.uv <= 10 ? 'Very High' : 'Extreme'
+                      }
+                    </span>
+                  </div>
+                )}
               </div>
             </div>
           </Card>

@@ -221,7 +221,9 @@ export default function HubComposer({ onClose }) {
   });
   const { data: recentMeals = [] } = useQuery({
     queryKey: ['composer.meals', user?.email],
-    queryFn: () => nutrition.list(user.email, 10),
+    queryFn: () => nutrition.list(user.email, 20).then(meals =>
+      meals.filter(m => !(m.food_name === 'Water' && m.water_oz > 0)).slice(0, 10)
+    ),
     enabled: !!user?.email,
   });
   const { data: completedGoals = [] } = useQuery({

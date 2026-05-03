@@ -69,6 +69,7 @@ export default function Workout() {
   const [cheatWarningData, setCheatWarningData] = useState(null);
   const [implausibleWarning, setImplausibleWarning] = useState(null);
   const [missingDataWarning, setMissingDataWarning] = useState(null);
+  const [cardioPageTitle, setCardioPageTitle] = useState(null);
 
   const guard = useMultiProfanityGuard();
   const { sessions, pauseWorkout, resumeWorkout, removeSession } = useWorkoutSessions();
@@ -530,6 +531,16 @@ export default function Workout() {
   }, []);
 
   useEffect(() => {
+    const handler = (e) => setCardioPageTitle(e.detail?.title || null);
+    window.addEventListener('flexyn-title', handler);
+    return () => window.removeEventListener('flexyn-title', handler);
+  }, []);
+
+  useEffect(() => {
+    if (!cardioOpen) setCardioPageTitle(null);
+  }, [cardioOpen]);
+
+  useEffect(() => {
     if (!started) return undefined;
     const handler = (e) => {
       e.preventDefault();
@@ -548,10 +559,10 @@ export default function Workout() {
         className="p-4 md:p-8 max-w-5xl mx-auto"
       >
         <PageHeader
-          kicker={t('pageHeader.kicker.workout')}
-          title={t('nav.workout')}
+          kicker={cardioPageTitle ? 'CARDIO' : t('pageHeader.kicker.workout')}
+          title={cardioPageTitle || t('nav.workout')}
           hidePeriod
-          subtitle={t('workout.subtitle')}
+          subtitle={cardioPageTitle ? null : t('workout.subtitle')}
         />
 
         <motion.div variants={itemVariants} initial="hidden" animate="visible" transition={{ delay: 0.2 }}>

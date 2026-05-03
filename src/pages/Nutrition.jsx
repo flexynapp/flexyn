@@ -8,7 +8,7 @@ import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
-import { Plus, Barcode, Trash2, TrendingUp, AlertCircle, Loader2, Droplet, X, Beaker, Settings as SettingsIcon } from 'lucide-react';
+import { Plus, Barcode, Trash2, TrendingUp, Loader2, Droplet, X, Beaker, Settings as SettingsIcon, History } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import MacroNutrientBox from '@/components/nutrition/MacroNutrientBox';
 import MineralsVitaminsBox from '@/components/nutrition/MineralsVitaminsBox';
@@ -17,6 +17,8 @@ import BarcodeResultModal from '@/components/nutrition/BarcodeResultModal';
 import BarcodeNotFoundModal from '@/components/nutrition/BarcodeNotFoundModal';
 import LogMealForm from '@/components/nutrition/LogMealForm';
 import NutritionOnboardingModal from '@/components/nutrition/NutritionOnboardingModal';
+import MealHistoryModal from '@/components/nutrition/MealHistoryModal';
+import NutritionPlansModal from '@/components/nutrition/NutritionPlansModal';
 import { lookupBarcode } from '@/lib/foodLookup';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { BrowserMultiFormatReader } from '@zxing/browser';
@@ -47,6 +49,10 @@ export default function Nutrition() {
   const [scannedProduct, setScannedProduct] = useState(null);
   const [notFoundBarcode, setNotFoundBarcode] = useState(null);
   const [showNutritionPlans, setShowNutritionPlans] = useState(false);
+  const [showMealHistory, setShowMealHistory] = useState(false);
+
+  // Hard daily cap: 200 oz (~5.9L). Beyond this is water-toxicity territory.
+  const WATER_DAILY_CAP_OZ = 200;
   const [nutritionTab, setNutritionTab] = useState('macros');
   const [entries, setEntries] = useState([]);
   // waterOz is derived from persisted logs
@@ -118,9 +124,9 @@ export default function Nutrition() {
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['nutritionLogs', user?.email, date] });
       if (variables.water_oz > 0) {
-        // Award 5 XP per glass (rate-limited to 5 awards/day server-side).
+        // Award 1 XP per glass (rate-limited server-side). Water is low-effort — keep XP minimal.
         base44.functions.invoke('updateUserXpAndAchievements', {
-          xp_gained: 5,
+          xp_gained: 1,
           action_type: 'water_logged',
           action_data: { date, oz: variables.water_oz },
         }).catch(() => {});
@@ -424,16 +430,23 @@ export default function Nutrition() {
       </motion.div>
 
       {/* Nutrition Goals & Plans */}
-      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, delay: 0.3 }} className="mb-6 grid grid-cols-2 gap-2">
+      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, delay: 0.3 }} className="mb-6 grid grid-cols-3 gap-2">
         <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.96 }} transition={{ type: 'spring', stiffness: 380, damping: 20 }}>
-          <Button onClick={openGoalsEditor} variant="outline" className="w-full h-12 font-heading font-semibold">
-            <SettingsIcon className="w-4 h-4 mr-2" />
-            {t('nutrition.editGoals')}
+          <Button onClick={openGoalsEditor} variant="outline" className="w-full h-12 font-heading font-semibold text-xs md:text-sm">
+            <SettingsIcon className="w-4 h-4 mr-1.5 shrink-0" />
+            <span className="truncate">{t('nutrition.editGoals')}</span>
           </Button>
         </motion.div>
         <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.96 }} transition={{ type: 'spring', stiffness: 380, damping: 20 }}>
-          <Button onClick={() => setShowNutritionPlans(true)} variant="outline" className="w-full h-12 font-heading font-semibold">
-            📋 {t('nutrition.nutritionPlans')}
+          <Button onClick={() => setShowMealHistory(true)} variant="outline" className="w-full h-12 font-heading font-semibold text-xs md:text-sm">
+            <History className="w-4 h-4 mr-1.5 shrink-0" />
+            <span className="truncate">Meal History</span>
+          </Button>
+        </motion.div>
+        <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.96 }} transition={{ type: 'spring', stiffness: 380, damping: 20 }}>
+          <Button onClick={() => setShowNutritionPlans(true)} variant="outline" className="w-full h-12 font-heading font-semibold text-xs md:text-sm">
+            <span className="mr-1">📋</span>
+            <span className="truncate">{t('nutrition.nutritionPlans')}</span>
           </Button>
         </motion.div>
       </motion.div>
@@ -490,13 +503,14 @@ export default function Nutrition() {
               {/* Add Glass Button */}
               <Button
                 className="text-xs md:text-sm"
-                onClick={() => saveMutation.mutate({
-                  date,
-                  food_name: 'Water',
-                  water_oz: 8,
-                  calories: 0, protein_g: 0, carbs_g: 0, fat_g: 0,
-                })}
-                disabled={saveMutation.isPending}
+                onClick={() => {
+                  if (waterOz + 8 > WATER_DAILY_CAP_OZ) {
+                    toast.error(`Daily water limit reached (${WATER_DAILY_CAP_OZ} oz). Stay safe!`);
+                    return;
+                  }
+                  saveMutation.mutate({ date, food_name: 'Water', water_oz: 8, calories: 0, protein_g: 0, carbs_g: 0, fat_g: 0 });
+                }}
+                disabled={saveMutation.isPending || waterOz >= WATER_DAILY_CAP_OZ}
               >
                 <Droplet className="w-4 h-4 mr-1" /> <span className="hidden sm:inline">{getGlassLabel()}</span><span className="sm:hidden">Glass (8 oz)</span>
               </Button>
@@ -512,12 +526,14 @@ export default function Nutrition() {
                   <Button
                     variant="secondary"
                     size="sm"
-                    onClick={() => saveMutation.mutate({
-                      date,
-                      food_name: 'Water',
-                      water_oz: bottle.oz,
-                      calories: 0, protein_g: 0, carbs_g: 0, fat_g: 0,
-                    })}
+                    onClick={() => {
+                      if (waterOz + bottle.oz > WATER_DAILY_CAP_OZ) {
+                        toast.error(`Daily water limit reached (${WATER_DAILY_CAP_OZ} oz). Stay safe!`);
+                        return;
+                      }
+                      saveMutation.mutate({ date, food_name: 'Water', water_oz: bottle.oz, calories: 0, protein_g: 0, carbs_g: 0, fat_g: 0 });
+                    }}
+                    disabled={saveMutation.isPending || waterOz >= WATER_DAILY_CAP_OZ}
                     className="pr-8 text-xs"
                   >
                     🍶 {bottle.label}
@@ -651,6 +667,13 @@ export default function Nutrition() {
         </AnimatePresence>
       </motion.div>
 
+      {/* Meal History Modal */}
+      <MealHistoryModal
+        open={showMealHistory}
+        onClose={() => setShowMealHistory(false)}
+        userProfile={userProfile}
+      />
+
       {/* Nutrition Goals Onboarding */}
       <NutritionOnboardingModal
         open={showGoalsOnboarding}
@@ -659,20 +682,11 @@ export default function Nutrition() {
       />
 
       {/* Nutrition Plans Modal */}
-      <Dialog open={showNutritionPlans} onOpenChange={setShowNutritionPlans}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-            <AlertCircle className="w-5 h-5 text-primary" />
-            {t('nutrition.nutritionPlans')}
-            </DialogTitle>
-          </DialogHeader>
-          <div className="text-center py-8">
-            <p className="text-lg font-heading font-semibold mb-2">{t('nutrition.comingSoon')}</p>
-            <p className="text-muted-foreground">{t('nutrition.comingSoonDesc')}</p>
-          </div>
-        </DialogContent>
-      </Dialog>
+      <NutritionPlansModal
+        open={showNutritionPlans}
+        onClose={() => setShowNutritionPlans(false)}
+        userProfile={userProfile}
+      />
     </motion.div>
   );
 }
