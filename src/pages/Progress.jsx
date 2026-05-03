@@ -401,7 +401,7 @@ export default function Progress() {
 
   const logs = useMemo(() => filterAfterReset(rawLogs, userProfile), [rawLogs, userProfile]);
   const regimens = useMemo(() => filterAfterReset(rawRegimens, userProfile), [rawRegimens, userProfile]);
-  const achievements = useMemo(() => filterAfterReset(rawAchievements, userProfile), [rawAchievements, userProfile]);
+  const achievements = useMemo(() => rawAchievements ?? [], [rawAchievements]);
 
   const weeklyCardio = useMemo(() => {
     const cutoff = subDays(new Date(), 7);

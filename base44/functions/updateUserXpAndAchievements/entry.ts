@@ -234,11 +234,11 @@ Deno.serve(async (req) => {
       return new Date(rec.created_date).getTime() >= resetAt;
     };
 
-    // Check and update achievements — filter to only post-reset records
-    const achievementsRaw = await base44Client.asServiceRole.entities.Achievement.filter(
+    // Fetch ALL achievements regardless of reset date — achievements are lifetime milestones
+    // and should never be hidden or re-created just because of an account reset.
+    const achievements = await base44Client.asServiceRole.entities.Achievement.filter(
       { created_by: user.email }
     );
-    const achievements = achievementsRaw.filter(isAfterReset);
 
     const achievementMap = {};
     achievements.forEach((a) => {
