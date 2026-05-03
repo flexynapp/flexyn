@@ -31,5 +31,6 @@ dist-ssr
 .env
 .vite
 
-# Claude Code local config (contains machine-specific dev permissions, not secrets)
+# Claude Code local config and worktrees — never commit these
 .claude/settings.local.json
+.claude/worktrees/
