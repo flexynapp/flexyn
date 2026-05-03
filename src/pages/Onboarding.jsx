@@ -1026,7 +1026,7 @@ function DemographicsStep({ saving, onNext }) {
 
 export default function Onboarding() {
   const navigate = useNavigate();
-  const { isAuthenticated, isLoadingAuth, checkUserAuth } = useAuth();
+  const { isAuthenticated, isLoadingAuth, checkUserAuth, user } = useAuth();
   const { setWeightUnit } = useWeightUnit();
   const urlParams = new URLSearchParams(window.location.search);
   const urlStep = urlParams.get('step');
@@ -1042,6 +1042,14 @@ export default function Onboarding() {
       setScreen('demographics');
     }
   }, [isAuthenticated, screen]);
+
+  // If user already completed onboarding, redirect straight to dashboard.
+  const { user } = useAuth();
+  useEffect(() => {
+    if (user?.onboarding_complete) {
+      navigate('/dashboard', { replace: true });
+    }
+  }, [user?.onboarding_complete]);
 
   const handleDemographicsNext = (data) => {
     setDemographicsData(data);
