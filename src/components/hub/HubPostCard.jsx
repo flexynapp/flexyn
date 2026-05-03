@@ -1,7 +1,7 @@
 import { useState, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ThumbsUp, ThumbsDown, MessageCircle, Share2, Lock, Globe2, Trash2, Bookmark } from 'lucide-react';
+import { ThumbsUp, ThumbsDown, MessageCircle, Lock, Globe2, Trash2, Bookmark } from 'lucide-react';
 import { format, parseISO } from 'date-fns';
 import { useAuth } from '@/lib/AuthContext';
 import { useLanguage } from '@/lib/LanguageContext';
@@ -95,23 +95,6 @@ export default function HubPostCard({ post, onAuthorClick = null }) {
     setPendingReaction(next);
     desiredRef.current = next;
     if (!inFlightRef.current) runWorker();
-  };
-
-  const handleShare = async () => {
-    const shareText = `${author.handle}: ${post.body || ''}`.trim();
-    const shareUrl = `${window.location.origin}/hub?post=${encodeURIComponent(post.id)}`;
-    if (navigator.share) {
-      try {
-        await navigator.share({ title: 'Flexyn Hub', text: shareText, url: shareUrl });
-      } catch { /* user cancelled */ }
-    } else {
-      try {
-        await navigator.clipboard.writeText(`${shareText}\n${shareUrl}`);
-        toast.success(t('hub.copiedToClipboard'));
-      } catch {
-        toast.error(t('hub.shareError'));
-      }
-    }
   };
 
   const handleDelete = async () => {
@@ -229,19 +212,12 @@ export default function HubPostCard({ post, onAuthorClick = null }) {
           <motion.button
             whileTap={{ scale: 0.88 }}
             onClick={handleSaveMeal}
-            className={`p-2 rounded-md transition-colors ${mealSaved ? 'text-primary' : 'text-muted-foreground hover:bg-secondary hover:text-foreground'}`}
+            className={`ml-auto p-2 rounded-md transition-colors ${mealSaved ? 'text-primary' : 'text-muted-foreground hover:bg-secondary hover:text-foreground'}`}
             aria-label={mealSaved ? 'Remove from saved meals' : 'Save meal'}
           >
             <Bookmark className={`w-4 h-4 ${mealSaved ? 'fill-current' : ''}`} />
           </motion.button>
         )}
-        <button
-          onClick={handleShare}
-          className={`${isMealPost ? '' : 'ml-auto'} p-2 rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors`}
-          aria-label={t('hub.share')}
-        >
-          <Share2 className="w-4 h-4" />
-        </button>
       </div>
 
       <AnimatePresence initial={false}>
