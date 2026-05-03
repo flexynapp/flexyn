@@ -7,7 +7,6 @@ const ENTITIES = [
   'BodyMetric',
   'ChatSession',
   'NutritionLog',
-  'Achievement',
   'WorkoutTemplate',
 ];
 
