@@ -14,6 +14,7 @@ const CATEGORY_COLORS = {
   goal: 'bg-yellow-500/10 text-yellow-600',
   nutrition: 'bg-emerald-500/10 text-emerald-600',
   milestone: 'bg-purple-500/10 text-purple-600',
+  cardio: 'bg-orange-500/10 text-orange-600',
 };
 
 export default function AchievementsModal({ open, onClose, achievements = [], user }) {
@@ -37,6 +38,7 @@ export default function AchievementsModal({ open, onClose, achievements = [], us
       goal: [],
       nutrition: [],
       milestone: [],
+      cardio: [],
     };
 
     ACHIEVEMENT_DEFINITIONS.forEach((def) => {
@@ -106,7 +108,7 @@ export default function AchievementsModal({ open, onClose, achievements = [], us
                 : 'border-transparent text-muted-foreground hover:text-foreground'
             }`}
           >
-            Active Achievements
+            {t('progress.activeAchievements')}
           </button>
           <button
             onClick={() => setActiveTab('completed')}
@@ -116,7 +118,7 @@ export default function AchievementsModal({ open, onClose, achievements = [], us
                 : 'border-transparent text-muted-foreground hover:text-foreground'
             }`}
           >
-            Completed Achievements
+            {t('progress.completedAchievements')}
           </button>
         </div>
 
@@ -204,8 +206,14 @@ export default function AchievementsModal({ open, onClose, achievements = [], us
             
             {activeTab === 'active' && Object.values(displayData).every(arr => arr.length === 0) && (
               <div className="text-center py-8">
-                <Trophy className="w-10 h-10 text-muted-foreground mx-auto mb-2" />
+                <Trophy className="w-10 h-10 text-yellow-500 mx-auto mb-2" />
                 <p className="text-muted-foreground text-sm">{t('progress.allCompleted')}</p>
+              </div>
+            )}
+            {activeTab === 'completed' && Object.values(displayData).every(arr => arr.length === 0) && (
+              <div className="text-center py-8">
+                <Lock className="w-10 h-10 text-muted-foreground mx-auto mb-2" />
+                <p className="text-muted-foreground text-sm">{t('progress.noneCompleted')}</p>
               </div>
             )}
           </div>

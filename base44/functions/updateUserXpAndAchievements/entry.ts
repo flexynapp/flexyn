@@ -130,6 +130,7 @@ const ACHIEVEMENT_DEFINITIONS = [
     name: 'First 5K',
     description: 'Complete a 5-kilometer run',
     icon: '🏃',
+    target: 1,
     category: 'cardio',
     xp_reward: 200,
   },
@@ -138,6 +139,7 @@ const ACHIEVEMENT_DEFINITIONS = [
     name: 'First 10K',
     description: 'Complete a 10-kilometer run',
     icon: '🏃‍♂️',
+    target: 1,
     category: 'cardio',
     xp_reward: 400,
   },
@@ -146,6 +148,7 @@ const ACHIEVEMENT_DEFINITIONS = [
     name: 'Half Marathoner',
     description: 'Complete a 21.1 km / 13.1 mi run',
     icon: '🥇',
+    target: 1,
     category: 'cardio',
     xp_reward: 1000,
   },
@@ -154,6 +157,7 @@ const ACHIEVEMENT_DEFINITIONS = [
     name: 'Century Club',
     description: 'Cover 100 km lifetime in cardio',
     icon: '💯',
+    target: 100,
     category: 'cardio',
     xp_reward: 600,
   },
@@ -162,6 +166,7 @@ const ACHIEVEMENT_DEFINITIONS = [
     name: 'Cardio Streak',
     description: 'Cardio sessions on 7 consecutive days',
     icon: '🔥',
+    target: 7,
     category: 'cardio',
     xp_reward: 300,
   },
@@ -170,6 +175,7 @@ const ACHIEVEMENT_DEFINITIONS = [
     name: 'Hour in the Saddle',
     description: 'Complete a 60-minute bike ride',
     icon: '🚴',
+    target: 1,
     category: 'cardio',
     xp_reward: 250,
   },
@@ -178,6 +184,7 @@ const ACHIEVEMENT_DEFINITIONS = [
     name: 'Marathon Walker',
     description: 'Walk 42.2 km / 26.2 mi total',
     icon: '🚶',
+    target: 42,
     category: 'cardio',
     xp_reward: 800,
   },
@@ -302,6 +309,24 @@ Deno.serve(async (req) => {
       updatesToMake.push({
         id: 'hundred_workouts',
         data: { progress: workoutCount },
+      });
+
+      // five_workouts_month: 5 workouts in the current calendar month
+      const nowDate = new Date();
+      const monthStart = new Date(nowDate.getFullYear(), nowDate.getMonth(), 1).toISOString();
+      const workoutsThisMonth = workoutLogs.filter((w) => {
+        if (!w.created_date) return false;
+        return w.created_date >= monthStart;
+      });
+      if (workoutsThisMonth.length >= 5 && !achievementMap['five_workouts_month']?.unlocked) {
+        updatesToMake.push({
+          id: 'five_workouts_month',
+          data: { unlocked: true, unlocked_date: new Date().toISOString(), progress: workoutsThisMonth.length },
+        });
+      }
+      updatesToMake.push({
+        id: 'five_workouts_month',
+        data: { progress: workoutsThisMonth.length },
       });
 
       // High volume workout
