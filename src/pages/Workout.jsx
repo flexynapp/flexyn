@@ -171,12 +171,18 @@ export default function Workout() {
       const xpGained = calculateWorkoutXp(data);
       const sessionVolume = calculateTotalVolume(data.exercises);
 
-      if (xpGained > 0) {
+      // Always fire XP + achievement check — even if XP is 0 (e.g. bodyweight-only
+      // or capped workout) so that achievement unlocks are never skipped.
+      // Wrapped in try-catch so a server-side failure never kills the mutation
+      // or prevents the success toast / workout reset from running.
+      try {
         await base44.functions.invoke('updateUserXpAndAchievements', {
           xp_gained: xpGained,
           action_type: 'workout_completed',
           action_data: { totalVolume: sessionVolume, workout_date: data.date }
         });
+      } catch (xpErr) {
+        console.warn('XP/achievement update failed (non-blocking):', xpErr);
       }
 
       // Denormalise total volume on the User record for leaderboards.

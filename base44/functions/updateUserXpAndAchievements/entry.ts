@@ -253,7 +253,9 @@ Deno.serve(async (req) => {
       const now = new Date();
       const diffDays = (now - workoutDate) / (1000 * 60 * 60 * 24);
       if (diffDays > 7) {
-        return Response.json({ success: true, newTotalXp: currentXp, xpGained: 0, note: 'Backdated workout — XP not awarded' });
+        // Backdated workout: zero out XP but still fall through so achievements
+        // (e.g. first_workout, workout counts) can still be checked and awarded.
+        adjustedXpGained = 0;
       }
     }
 
