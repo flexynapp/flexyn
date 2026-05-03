@@ -505,7 +505,7 @@ export default function Nutrition() {
                 className="text-xs md:text-sm"
                 onClick={() => {
                   if (waterOz + 8 > WATER_DAILY_CAP_OZ) {
-                    toast.error(`Daily water limit reached (${WATER_DAILY_CAP_OZ} oz). Stay safe!`);
+                    toast.error(`Daily water limit reached (${ozToDisplay(WATER_DAILY_CAP_OZ)} ${waterUnit}). Stay safe!`);
                     return;
                   }
                   saveMutation.mutate({ date, food_name: 'Water', water_oz: 8, calories: 0, protein_g: 0, carbs_g: 0, fat_g: 0 });
@@ -528,7 +528,7 @@ export default function Nutrition() {
                     size="sm"
                     onClick={() => {
                       if (waterOz + bottle.oz > WATER_DAILY_CAP_OZ) {
-                        toast.error(`Daily water limit reached (${WATER_DAILY_CAP_OZ} oz). Stay safe!`);
+                        toast.error(`Daily water limit reached (${ozToDisplay(WATER_DAILY_CAP_OZ)} ${waterUnit}). Stay safe!`);
                         return;
                       }
                       saveMutation.mutate({ date, food_name: 'Water', water_oz: bottle.oz, calories: 0, protein_g: 0, carbs_g: 0, fat_g: 0 });
