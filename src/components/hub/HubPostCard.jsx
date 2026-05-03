@@ -1,7 +1,7 @@
 import { useState, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ThumbsUp, ThumbsDown, MessageCircle, Share2, Lock, Globe2, Trash2 } from 'lucide-react';
+import { ThumbsUp, ThumbsDown, MessageCircle, Share2, Lock, Globe2, Trash2, Bookmark } from 'lucide-react';
 import { format, parseISO } from 'date-fns';
 import { useAuth } from '@/lib/AuthContext';
 import { useLanguage } from '@/lib/LanguageContext';
@@ -11,6 +11,7 @@ import * as hubPosts from '@/lib/data/hubPosts';
 import HubCommentsInline from './HubCommentsInline';
 import PostActivityBlock from './PostActivityBlock';
 import { toast } from 'sonner';
+import { isMealSaved, saveMeal, removeSavedMeal } from '@/lib/savedMeals';
 
 export default function HubPostCard({ post, onAuthorClick = null }) {
   const { t } = useLanguage();
@@ -18,6 +19,31 @@ export default function HubPostCard({ post, onAuthorClick = null }) {
   const queryClient = useQueryClient();
   const [commentsOpen, setCommentsOpen] = useState(false);
   const [pendingReaction, setPendingReaction] = useState(undefined);
+  const [mealSaved, setMealSaved] = useState(() => isMealSaved(post.id));
+
+  const isMealPost = post.post_type === 'meal';
+
+  const handleSaveMeal = () => {
+    if (mealSaved) {
+      removeSavedMeal(post.id);
+      setMealSaved(false);
+      toast.success('Removed from saved meals');
+    } else {
+      const snap = post.linked_entity_snapshot || {};
+      saveMeal({
+        id: post.id,
+        food_name: snap.food_name || post.body || 'Community Meal',
+        calories: snap.calories || 0,
+        protein_g: snap.protein_g || 0,
+        carbs_g: snap.carbs_g || 0,
+        fat_g: snap.fat_g || 0,
+        image_url: post.image_url || null,
+        author_name: post.author_name || null,
+      });
+      setMealSaved(true);
+      toast.success('Meal saved! Find it in + Log Meal → Saved');
+    }
+  };
   const desiredRef = useRef(undefined);
   const inFlightRef = useRef(false);
 
@@ -199,9 +225,19 @@ export default function HubPostCard({ post, onAuthorClick = null }) {
           activeColor="text-primary"
           onClick={() => setCommentsOpen(o => !o)}
         />
+        {isMealPost && (
+          <motion.button
+            whileTap={{ scale: 0.88 }}
+            onClick={handleSaveMeal}
+            className={`p-2 rounded-md transition-colors ${mealSaved ? 'text-primary' : 'text-muted-foreground hover:bg-secondary hover:text-foreground'}`}
+            aria-label={mealSaved ? 'Remove from saved meals' : 'Save meal'}
+          >
+            <Bookmark className={`w-4 h-4 ${mealSaved ? 'fill-current' : ''}`} />
+          </motion.button>
+        )}
         <button
           onClick={handleShare}
-          className="ml-auto p-2 rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
+          className={`${isMealPost ? '' : 'ml-auto'} p-2 rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors`}
           aria-label={t('hub.share')}
         >
           <Share2 className="w-4 h-4" />

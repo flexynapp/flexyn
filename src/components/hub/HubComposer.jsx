@@ -13,7 +13,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   X, Send, Globe2, Lock,
   Dumbbell, Activity, Apple, Target, Trophy, ListChecks, Image as ImageIcon, BarChart3,
-  ArrowLeft, Loader2, MessageSquare, ChevronDown,
+  ArrowLeft, Loader2, MessageSquare, ChevronDown, Camera, XCircle,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { format, parseISO } from 'date-fns';
@@ -208,6 +208,26 @@ export default function HubComposer({ onClose }) {
   const [privacy, setPrivacy] = useState('public');
   const [posting, setPosting] = useState(false);
 
+  // Optional image attachment for meal posts
+  const [mealImageFile, setMealImageFile] = useState(null);
+  const [mealImagePreview, setMealImagePreview] = useState(null);
+  const mealImageInputRef = useRef(null);
+
+  const handleMealImagePick = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setMealImageFile(file);
+    const reader = new FileReader();
+    reader.onload = (ev) => setMealImagePreview(ev.target.result);
+    reader.readAsDataURL(file);
+  };
+
+  const clearMealImage = () => {
+    setMealImageFile(null);
+    setMealImagePreview(null);
+    if (mealImageInputRef.current) mealImageInputRef.current.value = '';
+  };
+
   // ── Load shareable activities ──
   const { data: recentWorkouts = [] } = useQuery({
     queryKey: ['composer.workouts', user?.email],
@@ -272,6 +292,7 @@ export default function HubComposer({ onClose }) {
              : summarize[kind](item),
     });
     setBody('');
+    clearMealImage();
     setStep(kind === 'status' ? 'status_compose' : 'compose');
   };
 
@@ -311,6 +332,18 @@ export default function HubComposer({ onClose }) {
           imageUrl = result?.file_url || null;
         } catch (e) {
           console.error('Photo upload failed', e);
+          toast.error(t('hub.composer.postError'));
+          setPosting(false);
+          return;
+        }
+      }
+
+      if (selected.kind === 'meal' && mealImageFile) {
+        try {
+          const result = await base44.integrations.Core.UploadFile({ file: mealImageFile });
+          imageUrl = result?.file_url || null;
+        } catch (e) {
+          console.error('Meal photo upload failed', e);
           toast.error(t('hub.composer.postError'));
           setPosting(false);
           return;
@@ -548,6 +581,39 @@ export default function HubComposer({ onClose }) {
       <div className="text-xs text-muted-foreground text-right mt-1 mb-3">
         {body.length}/500
       </div>
+
+      {/* Optional photo for meal posts */}
+      {selected.kind === 'meal' && (
+        <div className="mb-3">
+          {mealImagePreview ? (
+            <div className="relative rounded-xl overflow-hidden border border-border">
+              <img src={mealImagePreview} alt="Meal" className="w-full max-h-48 object-cover" />
+              <button
+                onClick={clearMealImage}
+                className="absolute top-2 right-2 p-1.5 rounded-full bg-black/60 text-white hover:bg-black/80 transition-colors"
+              >
+                <XCircle className="w-4 h-4" />
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => mealImageInputRef.current?.click()}
+              className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border-2 border-dashed border-border text-xs text-muted-foreground hover:border-primary/50 hover:text-foreground transition-colors"
+            >
+              <Camera className="w-4 h-4" /> Add a photo of your meal (optional)
+            </button>
+          )}
+          <input
+            ref={mealImageInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={handleMealImagePick}
+          />
+        </div>
+      )}
+
       {renderPrivacyButtons()}
     </div>
   );
