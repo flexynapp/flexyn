@@ -108,6 +108,10 @@ const ru = {
   'workout.templates.createDesc': 'Создать новый шаблон',
   'workout.templates.useThis': 'Использовать этот шаблон',
   'workout.templates.exerciseCount': '{n} упражнений',
+    'workout.templates.public': 'Public',
+    'workout.templates.private': 'Private',
+    'workout.templates.publicDesc': 'Anyone can find and copy this template',
+    'workout.templates.privateDesc': 'Only you can see this template',
   // ── Goals toasts
   'goals.toast.created': 'Цель создана!',
   'goals.toast.updated': 'Цель обновлена!',
@@ -254,6 +258,10 @@ const pl = {
   'workout.templates.createDesc': 'Utwórz nowy szablon',
   'workout.templates.useThis': 'Użyj tego szablonu',
   'workout.templates.exerciseCount': '{n} ćwiczeń',
+    'workout.templates.public': 'Public',
+    'workout.templates.private': 'Private',
+    'workout.templates.publicDesc': 'Anyone can find and copy this template',
+    'workout.templates.privateDesc': 'Only you can see this template',
   // ── Goals toasts
   'goals.toast.created': 'Cel utworzony!',
   'goals.toast.updated': 'Cel zaktualizowany!',
