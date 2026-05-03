@@ -109,12 +109,7 @@ export default function WaterTracker({ waterOz = 0, userProfile = {}, waterUnit 
     ? parseFloat(ozToDisplay(dailyRecOz).toFixed(1))
     : Math.round(ozToDisplay(dailyRecOz));
 
-  // Ring color transitions based on progress
-  const ringColor = isGoalReached
-    ? 'hsl(142, 71%, 45%)'   // green
-    : animatedProgress > 66
-    ? 'hsl(198, 93%, 50%)'   // cyan
-    : 'hsl(var(--primary))'; // brand orange
+  const ringColor = 'hsl(var(--primary))';
 
   return (
     <div className="space-y-6">
@@ -206,8 +201,8 @@ export default function WaterTracker({ waterOz = 0, userProfile = {}, waterUnit 
             >
               <defs>
                 <linearGradient id="ringGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-                  <stop offset="0%" stopColor={isGoalReached ? '#22c55e' : '#60a5fa'} />
-                  <stop offset="100%" stopColor={ringColor} />
+                  <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity="0.7" />
+                  <stop offset="100%" stopColor="hsl(var(--primary))" />
                 </linearGradient>
               </defs>
               {/* Track */}
