@@ -1,6 +1,7 @@
-#env
+# env — ignore all local env files but allow .env.example to be committed
 .env
 .env.*
+!.env.example
 
 # Logs
 /logs

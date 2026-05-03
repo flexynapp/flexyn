@@ -17,7 +17,19 @@ export default function Header() {
   const location = useLocation();
   const { user } = useAuth();
   const { t } = useLanguage();
+  const [titleOverride, setTitleOverride] = useState(null);
 
+  // Listen for cardio-mode title overrides dispatched by CardioSection
+  useEffect(() => {
+    const handler = (e) => setTitleOverride(e.detail?.title || null);
+    window.addEventListener('flexyn-title', handler);
+    return () => window.removeEventListener('flexyn-title', handler);
+  }, []);
+
+  // Reset override when the route changes
+  useEffect(() => {
+    setTitleOverride(null);
+  }, [location.pathname]);
 
   const ROUTE_TITLES = {
     '/workout': t('nav.workout'),
@@ -34,7 +46,7 @@ export default function Header() {
 
 
   const isChildRoute = CHILD_ROUTES.includes(location.pathname);
-  const title = ROUTE_TITLES[location.pathname] || t('app.name');
+  const title = titleOverride || ROUTE_TITLES[location.pathname] || t('app.name');
 
   return (
     <header className="lg:hidden fixed top-0 left-0 right-0 z-40 bg-card/80 backdrop-blur-md border-b border-border select-none-ui"

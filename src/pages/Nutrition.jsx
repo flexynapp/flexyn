@@ -8,7 +8,7 @@ import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
-import { Plus, Barcode, Trash2, TrendingUp, AlertCircle, Loader2, Droplet, X, Beaker, Settings as SettingsIcon } from 'lucide-react';
+import { Plus, Barcode, Trash2, TrendingUp, AlertCircle, Loader2, Droplet, X, Beaker, Settings as SettingsIcon, History } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import MacroNutrientBox from '@/components/nutrition/MacroNutrientBox';
 import MineralsVitaminsBox from '@/components/nutrition/MineralsVitaminsBox';
@@ -17,6 +17,7 @@ import BarcodeResultModal from '@/components/nutrition/BarcodeResultModal';
 import BarcodeNotFoundModal from '@/components/nutrition/BarcodeNotFoundModal';
 import LogMealForm from '@/components/nutrition/LogMealForm';
 import NutritionOnboardingModal from '@/components/nutrition/NutritionOnboardingModal';
+import MealHistoryModal from '@/components/nutrition/MealHistoryModal';
 import { lookupBarcode } from '@/lib/foodLookup';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { BrowserMultiFormatReader } from '@zxing/browser';
@@ -47,6 +48,7 @@ export default function Nutrition() {
   const [scannedProduct, setScannedProduct] = useState(null);
   const [notFoundBarcode, setNotFoundBarcode] = useState(null);
   const [showNutritionPlans, setShowNutritionPlans] = useState(false);
+  const [showMealHistory, setShowMealHistory] = useState(false);
   const [nutritionTab, setNutritionTab] = useState('macros');
   const [entries, setEntries] = useState([]);
   // waterOz is derived from persisted logs
@@ -424,16 +426,23 @@ export default function Nutrition() {
       </motion.div>
 
       {/* Nutrition Goals & Plans */}
-      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, delay: 0.3 }} className="mb-6 grid grid-cols-2 gap-2">
+      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, delay: 0.3 }} className="mb-6 grid grid-cols-3 gap-2">
         <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.96 }} transition={{ type: 'spring', stiffness: 380, damping: 20 }}>
-          <Button onClick={openGoalsEditor} variant="outline" className="w-full h-12 font-heading font-semibold">
-            <SettingsIcon className="w-4 h-4 mr-2" />
-            {t('nutrition.editGoals')}
+          <Button onClick={openGoalsEditor} variant="outline" className="w-full h-12 font-heading font-semibold text-xs md:text-sm">
+            <SettingsIcon className="w-4 h-4 mr-1.5 shrink-0" />
+            <span className="truncate">{t('nutrition.editGoals')}</span>
           </Button>
         </motion.div>
         <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.96 }} transition={{ type: 'spring', stiffness: 380, damping: 20 }}>
-          <Button onClick={() => setShowNutritionPlans(true)} variant="outline" className="w-full h-12 font-heading font-semibold">
-            📋 {t('nutrition.nutritionPlans')}
+          <Button onClick={() => setShowMealHistory(true)} variant="outline" className="w-full h-12 font-heading font-semibold text-xs md:text-sm">
+            <History className="w-4 h-4 mr-1.5 shrink-0" />
+            <span className="truncate">Meal History</span>
+          </Button>
+        </motion.div>
+        <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.96 }} transition={{ type: 'spring', stiffness: 380, damping: 20 }}>
+          <Button onClick={() => setShowNutritionPlans(true)} variant="outline" className="w-full h-12 font-heading font-semibold text-xs md:text-sm">
+            <span className="mr-1">📋</span>
+            <span className="truncate">{t('nutrition.nutritionPlans')}</span>
           </Button>
         </motion.div>
       </motion.div>
@@ -650,6 +659,13 @@ export default function Nutrition() {
           )}
         </AnimatePresence>
       </motion.div>
+
+      {/* Meal History Modal */}
+      <MealHistoryModal
+        open={showMealHistory}
+        onClose={() => setShowMealHistory(false)}
+        userProfile={userProfile}
+      />
 
       {/* Nutrition Goals Onboarding */}
       <NutritionOnboardingModal

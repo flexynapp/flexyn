@@ -77,11 +77,26 @@ function ViewWrapper({ viewKey, children }) {
   );
 }
 
+function dispatchTitle(title) {
+  window.dispatchEvent(new CustomEvent('flexyn-title', { detail: { title } }));
+}
+
 export default function CardioSection({ onBack }) {
   const { t } = useLanguage();
   const { user } = useAuth();
   const { distanceUnit } = useDistanceUnit();
   const [view, setView] = useState({ name: 'home' });
+
+  // Keep the header title in sync with the current cardio mode
+  useEffect(() => {
+    if (view.mode === 'running') dispatchTitle(t('cardio.modes.running'));
+    else if (view.mode === 'walking') dispatchTitle(t('cardio.modes.walking'));
+    else if (view.mode === 'biking') dispatchTitle(t('cardio.modes.biking'));
+    else dispatchTitle(null);
+  }, [view.mode, t]);
+
+  // Reset header title when cardio section unmounts
+  useEffect(() => () => dispatchTitle(null), []);
 
   const { data: userProfile = {} } = useQuery({
     queryKey: ['userProfile', user?.email],
