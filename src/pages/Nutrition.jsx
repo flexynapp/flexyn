@@ -570,22 +570,23 @@ export default function Nutrition() {
               </Button>
             </div>
 
-            {/* WATER ENTRY LOG */}
+            {/* WATER ENTRY LOG — grouped by size */}
             <div className="pt-4 border-t border-border">
-              <p className="text-xs font-medium text-muted-foreground mb-2">{t('nutrition.waterEntries')}</p>
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-xs font-medium text-muted-foreground">{t('nutrition.waterEntries')}</p>
+                {waterEntries.length > 0 && (
+                  <AnimatedTotal value={ozToDisplay(waterOz)} unit={waterUnit} />
+                )}
+              </div>
               {waterEntries.length === 0 ? (
                 <p className="text-xs text-muted-foreground">{t('nutrition.noWater')}</p>
               ) : (
-                <div className="space-y-1">
-                  {waterEntries.map(e => (
-                    <div key={e.id} className="flex items-center justify-between text-xs">
-                      <span>{ozToDisplay(e.water_oz)} {waterUnit}</span>
-                      <button onClick={() => deleteMutation.mutate(e.id)} className="text-muted-foreground hover:text-destructive">
-                        <X className="w-3 h-3" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
+                <WaterEntryGroups
+                  entries={waterEntries}
+                  ozToDisplay={ozToDisplay}
+                  waterUnit={waterUnit}
+                  onDelete={(id) => deleteMutation.mutate(id)}
+                />
               )}
             </div>
           </div>
@@ -707,6 +708,88 @@ export default function Nutrition() {
 }
 
 
+
+/* ── Animated total display ─────────────────────────────────────────────── */
+function AnimatedTotal({ value, unit }) {
+  const [display, setDisplay] = React.useState(0);
+  React.useEffect(() => {
+    const target = parseFloat(value) || 0;
+    if (target === 0) { setDisplay(0); return; }
+    const duration = 600;
+    const steps = 30;
+    const increment = target / steps;
+    let current = 0;
+    let step = 0;
+    const timer = setInterval(() => {
+      step++;
+      current = step >= steps ? target : Math.min(current + increment, target);
+      setDisplay(current);
+      if (step >= steps) clearInterval(timer);
+    }, duration / steps);
+    return () => clearInterval(timer);
+  }, [value]);
+
+  const fmt = (v) => {
+    if (unit === 'L') return parseFloat(v).toFixed(2);
+    return Math.round(v);
+  };
+
+  return (
+    <span className="text-xs font-heading font-bold text-blue-500">
+      {fmt(display)} {unit} today
+    </span>
+  );
+}
+
+/* ── Grouped water entries ──────────────────────────────────────────────── */
+function WaterEntryGroups({ entries, ozToDisplay, waterUnit, onDelete }) {
+  // Group entries by their oz value so identical glasses collapse
+  const groups = React.useMemo(() => {
+    const map = new Map();
+    for (const e of entries) {
+      const key = e.water_oz;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(e);
+    }
+    return Array.from(map.entries()).map(([oz, items]) => ({
+      oz,
+      label: `${ozToDisplay(oz)} ${waterUnit}`,
+      count: items.length,
+      ids: items.map(i => i.id),
+      latestId: items[items.length - 1].id,
+    }));
+  }, [entries, ozToDisplay, waterUnit]);
+
+  return (
+    <div className="flex flex-wrap gap-2">
+      {groups.map(g => (
+        <motion.div
+          key={g.oz}
+          layout
+          initial={{ opacity: 0, scale: 0.85 }}
+          animate={{ opacity: 1, scale: 1 }}
+          exit={{ opacity: 0, scale: 0.85 }}
+          className="flex items-center gap-1.5 pl-2.5 pr-1.5 py-1 rounded-full bg-blue-500/10 border border-blue-500/20 text-xs"
+        >
+          <Droplet className="w-3 h-3 text-blue-500 shrink-0" />
+          <span className="font-medium text-blue-700 dark:text-blue-300">{g.label}</span>
+          {g.count > 1 && (
+            <span className="font-heading font-bold text-[10px] px-1.5 py-0.5 rounded-full bg-blue-500/20 text-blue-600 dark:text-blue-400">
+              ×{g.count}
+            </span>
+          )}
+          <button
+            onClick={() => onDelete(g.latestId)}
+            className="ml-0.5 p-0.5 rounded-full text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+            title="Remove one"
+          >
+            <X className="w-3 h-3" />
+          </button>
+        </motion.div>
+      ))}
+    </div>
+  );
+}
 
 function parseCameraError(err, t) {
   const msg = err?.message || String(err);
