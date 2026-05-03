@@ -1044,7 +1044,6 @@ export default function Onboarding() {
   }, [isAuthenticated, screen]);
 
   // If user already completed onboarding, redirect straight to dashboard.
-  const { user } = useAuth();
   useEffect(() => {
     if (user?.onboarding_complete) {
       navigate('/dashboard', { replace: true });
