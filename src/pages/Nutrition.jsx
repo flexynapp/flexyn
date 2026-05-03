@@ -572,7 +572,7 @@ export default function Nutrition() {
 
             {/* WATER ENTRY LOG — grouped by size */}
             <div className="pt-4 border-t border-border">
-              <div className="flex items-center justify-between mb-2">
+              <div className="flex items-end justify-between mb-3">
                 <p className="text-xs font-medium text-muted-foreground">{t('nutrition.waterEntries')}</p>
                 {waterEntries.length > 0 && (
                   <AnimatedTotal value={ozToDisplay(waterOz)} unit={waterUnit} />
@@ -711,21 +711,29 @@ export default function Nutrition() {
 
 /* ── Animated total display ─────────────────────────────────────────────── */
 function AnimatedTotal({ value, unit }) {
-  const [display, setDisplay] = React.useState(0);
+  const [display, setDisplay] = React.useState(() => parseFloat(value) || 0);
+  const displayRef = React.useRef(display);
+
   React.useEffect(() => {
     const target = parseFloat(value) || 0;
-    if (target === 0) { setDisplay(0); return; }
-    const duration = 600;
+    const from = displayRef.current;
+    if (target === from) return;
+
+    const duration = 500;
     const steps = 30;
-    const increment = target / steps;
-    let current = 0;
+    const diff = target - from;
     let step = 0;
+
     const timer = setInterval(() => {
       step++;
-      current = step >= steps ? target : Math.min(current + increment, target);
+      // ease-out: slower as it approaches target
+      const progress = 1 - Math.pow(1 - step / steps, 2);
+      const current = step >= steps ? target : from + diff * progress;
+      displayRef.current = current;
       setDisplay(current);
       if (step >= steps) clearInterval(timer);
     }, duration / steps);
+
     return () => clearInterval(timer);
   }, [value]);
 
@@ -735,9 +743,12 @@ function AnimatedTotal({ value, unit }) {
   };
 
   return (
-    <span className="text-xs font-heading font-bold text-blue-500">
-      {fmt(display)} {unit} today
-    </span>
+    <div className="flex flex-col items-end">
+      <span className="font-heading font-black text-3xl leading-none text-blue-500 tabular-nums">
+        {fmt(display)}
+      </span>
+      <span className="text-[10px] font-medium text-blue-400 uppercase tracking-wide">{unit} today</span>
+    </div>
   );
 }
 
