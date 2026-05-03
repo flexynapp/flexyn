@@ -1,1085 +1,1073 @@
-import { useState, useEffect } from 'react';
-import { LOGO_URL } from '@/lib/constants';
-import { useLanguage } from '@/lib/LanguageContext';
-import { useWeightUnit } from '@/lib/WeightUnitContext';
-// Note: useWeightUnit is also used in the top-level Onboarding component
-import LanguagePicker from '@/components/LanguagePicker';
-import { getWasFirstLaunchThisSession, markReturningUser } from '@/lib/firstLaunch';
-import { containsProfanity } from '@/lib/profanityFilter';
-import ProfanityWarningDialog from '@/components/ProfanityWarningDialog';
-import { toast } from 'sonner';
+// src/pages/Onboarding.jsx
+// Redesigned onboarding — 7-step flow with animated background, feature
+// carousel, multi-select goals, experience level, stat scrubbers,
+// schedule picker, loading animation, and personalised reveal.
+
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useAuth } from '@/lib/AuthContext';
 import { motion, AnimatePresence } from 'framer-motion';
-import { format, parse } from 'date-fns';
+import { toast } from 'sonner';
+import { useAuth } from '@/lib/AuthContext';
+import { useWeightUnit } from '@/lib/WeightUnitContext';
 import { base44 } from '@/api/base44Client';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Card } from '@/components/ui/card';
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
-import { ArrowRight, User, Calendar, Weight, Ruler, Dumbbell, TrendingUp, Apple, Trophy, Users, Medal, LogIn, Check, X, Info, ChevronDown } from 'lucide-react';
-import LocationStep from '@/components/onboarding/LocationStep';
+import { markReturningUser } from '@/lib/firstLaunch';
+import { containsProfanity } from '@/lib/profanityFilter';
 
-// ── Slideshow visuals ─────────────────────────────────────────────────────────
+/* ═══════════════════════════════════════════════════════════════
+   CONSTANTS
+═══════════════════════════════════════════════════════════════ */
 
-function VisualFrame({ children, accent = 'primary' }) {
+const GOALS = [
+  { id: 'strength',  title: 'Build strength',   sub: 'Compound lifts. Heavy. Honest.',                        icon: 'dumbbell',      accent: 'hsl(26 95% 56%)'  },
+  { id: 'muscle',    title: 'Add muscle',        sub: 'Hypertrophy program, smart volume.',                    icon: 'flame',         accent: 'hsl(14 92% 56%)'  },
+  { id: 'lose',      title: 'Lose fat',          sub: 'Recomp without losing the gains.',                      icon: 'trending-down', accent: 'hsl(160 64% 45%)' },
+  { id: 'endurance', title: 'Run further',       sub: "Cardio plans that don't feel like punishment.",         icon: 'activity',      accent: 'hsl(217 91% 60%)' },
+  { id: 'mobility',  title: 'Move better',       sub: 'Mobility, flexibility, longevity.',                     icon: 'wind',          accent: 'hsl(280 60% 60%)' },
+];
+
+const GOAL_TAILORS = {
+  strength:  ['Heavier compounds', 'Anti-cheat: bar speed', '+15 g protein/day'],
+  muscle:    ['Hypertrophy volume', 'Heatmap: chest / back / legs', '+25 g protein/day'],
+  lose:      ['Calorie target −350', 'Cardio finishers', 'Anti-cheat: rest timer'],
+  endurance: ['VO₂ blocks', 'Cardio heatmap', 'Carb-forward macros'],
+  mobility:  ['Daily mobility flow', 'Form-check anti-cheat', 'Recovery weighting'],
+};
+
+const LEVELS = [
+  { id: 'newbie',     label: 'New',        sub: 'Less than 6 months lifting',      bars: 1, desc: "We'll start light, build form first." },
+  { id: 'returning',  label: 'Returning',  sub: 'Coming back after a break',       bars: 2, desc: 'Ramp gently. Avoid the soreness wall.' },
+  { id: 'consistent', label: 'Consistent', sub: '6–24 months under the bar',       bars: 3, desc: 'Progressive overload, real periodization.' },
+  { id: 'advanced',   label: 'Advanced',   sub: '2+ years, lifts close to plateau', bars: 4, desc: 'Specificity, blocks, and earned PRs.' },
+];
+
+const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const TIMES    = ['Morning', 'Midday', 'Evening', 'Late night'];
+
+const FEATURES = [
+  { id: 'coach',    eyebrow: 'AI Coach',   title: 'A coach that adapts in real time',       sub: 'Reads your sets. Adjusts tomorrow. No guesswork.',                              accent: 'hsl(26 95% 56%)'  },
+  { id: 'log',      eyebrow: 'Smart Log',  title: 'Logging that finishes your sentence',    sub: 'Auto-detects sets, plates, RPE. Hands stay on the bar.',                        accent: 'hsl(217 91% 60%)' },
+  { id: 'progress', eyebrow: 'Progress',   title: 'Watch your numbers climb',               sub: 'PR tracking, volume curves, e1RM that actually mean something.',                 accent: 'hsl(160 64% 45%)' },
+  { id: 'recovery', eyebrow: 'Recovery',   title: 'Train hard. Recover smarter.',           sub: 'Readiness score syncs with sleep, soreness, last session.',                      accent: 'hsl(280 60% 60%)' },
+  { id: 'streaks',  eyebrow: 'Streaks',    title: 'Show up. Stack the days.',               sub: 'Streak shields, weekly missions, and the only leaderboard that matters: yours.', accent: 'hsl(14 92% 56%)'  },
+];
+
+const LOADING_TASKS = [
+  'Reading your goals',
+  'Mapping training volume',
+  'Calibrating progression',
+  'Pairing exercises to equipment',
+  'Stress-testing recovery',
+  'Locking in week one',
+];
+
+/* ═══════════════════════════════════════════════════════════════
+   ICON HELPER
+═══════════════════════════════════════════════════════════════ */
+
+function Icon({ name, size = 22, strokeWidth = 2.2, color = 'currentColor' }) {
+  const p = { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: color, strokeWidth, strokeLinecap: 'round', strokeLinejoin: 'round' };
+  switch (name) {
+    case 'dumbbell':      return <svg {...p}><path d="M14.4 14.4 9.6 9.6"/><path d="M18.657 21.485a2 2 0 1 1-2.829-2.828l-1.767 1.768a2 2 0 1 1-2.829-2.829l6.364-6.364a2 2 0 1 1 2.829 2.829l-1.768 1.767a2 2 0 1 1 2.828 2.829z"/><path d="m21.5 21.5-1.4-1.4"/><path d="M3.9 3.9 2.5 2.5"/><path d="M6.404 12.768a2 2 0 1 1-2.829-2.829l1.768-1.767a2 2 0 1 1-2.828-2.829l2.828-2.828a2 2 0 1 1 2.829 2.828l1.767-1.768a2 2 0 1 1 2.829 2.829z"/></svg>;
+    case 'flame':         return <svg {...p}><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></svg>;
+    case 'trending-down': return <svg {...p}><polyline points="22 17 13.5 8.5 8.5 13.5 2 7"/><polyline points="16 17 22 17 22 11"/></svg>;
+    case 'activity':      return <svg {...p}><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>;
+    case 'wind':          return <svg {...p}><path d="M9.59 4.59A2 2 0 1 1 11 8H2m10.59 11.41A2 2 0 1 0 14 16H2m15.73-8.27A2.5 2.5 0 1 1 19.5 12H2"/></svg>;
+    case 'check':         return <svg {...p}><polyline points="20 6 9 17 4 12"/></svg>;
+    case 'arrow-right':   return <svg {...p}><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>;
+    case 'arrow-left':    return <svg {...p}><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>;
+    case 'user':          return <svg {...p}><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>;
+    case 'ruler':         return <svg {...p}><path d="M21.3 8.7L8.7 21.3a2.4 2.4 0 0 1-3.4 0L2.7 18.7a2.4 2.4 0 0 1 0-3.4L15.3 2.7a2.4 2.4 0 0 1 3.4 0l2.6 2.6a2.4 2.4 0 0 1 0 3.4z"/><path d="m7.5 10.5 2 2"/><path d="m10.5 7.5 2 2"/><path d="m13.5 4.5 2 2"/><path d="m4.5 13.5 2 2"/></svg>;
+    case 'scale':         return <svg {...p}><path d="m16 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"/><path d="m2 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"/><path d="M7 21h10"/><path d="M12 3v18"/><path d="M3 7h2c2 0 5-1 7-2 2 1 5 2 7 2h2"/></svg>;
+    default: return null;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   AURORA BACKGROUND
+═══════════════════════════════════════════════════════════════ */
+
+function Aurora() {
   return (
-    <div className="relative w-full max-w-[280px] h-[180px] rounded-2xl bg-card border border-border shadow-lg shadow-foreground/5 overflow-hidden mb-6">
-      <div
-        aria-hidden="true"
-        className="absolute inset-0 pointer-events-none"
-        style={{ background: `radial-gradient(120% 80% at 50% 0%, hsl(var(--${accent}) / 0.06), transparent 60%)` }}
-      />
-      <div className="relative w-full h-full p-4">{children}</div>
+    <div aria-hidden="true" className="pointer-events-none fixed inset-0 overflow-hidden">
+      {/* Grid overlay */}
+      <div className="absolute inset-0 opacity-[0.035]"
+        style={{ backgroundImage: 'linear-gradient(hsl(var(--foreground)) 1px, transparent 1px), linear-gradient(90deg, hsl(var(--foreground)) 1px, transparent 1px)', backgroundSize: '48px 48px' }} />
+      {/* Blobs */}
+      <motion.div className="absolute rounded-full blur-[80px] opacity-60"
+        style={{ width: '70%', height: '55%', left: '-10%', top: '-10%', background: 'radial-gradient(circle, hsl(var(--primary) / 0.55), transparent 70%)' }}
+        animate={{ x: [0, 20, 0], y: [0, 15, 0] }} transition={{ duration: 18, repeat: Infinity, ease: 'easeInOut' }} />
+      <motion.div className="absolute rounded-full blur-[80px] opacity-45"
+        style={{ width: '55%', height: '50%', right: '-5%', top: '25%', background: 'radial-gradient(circle, hsl(38 92% 60% / 0.5), transparent 70%)' }}
+        animate={{ x: [0, -20, 0], y: [0, 20, 0] }} transition={{ duration: 14, repeat: Infinity, ease: 'easeInOut', delay: 2 }} />
+      <motion.div className="absolute rounded-full blur-[80px] opacity-40"
+        style={{ width: '75%', height: '45%', left: '5%', bottom: '-10%', background: 'radial-gradient(circle, hsl(14 92% 56% / 0.38), transparent 70%)' }}
+        animate={{ x: [0, 15, 0], y: [0, -10, 0] }} transition={{ duration: 20, repeat: Infinity, ease: 'easeInOut', delay: 4 }} />
+      {/* Vignette */}
+      <div className="absolute inset-0" style={{ background: 'radial-gradient(ellipse 80% 80% at 50% 50%, transparent 40%, hsl(var(--background) / 0.35) 100%)' }} />
     </div>
   );
 }
 
-function WorkoutLogVisual() {
-  const sets = [
-    { weight: 135, reps: 10 },
-    { weight: 135, reps: 8  },
-    { weight: 145, reps: 6  },
-  ];
+/* ═══════════════════════════════════════════════════════════════
+   CONFETTI
+═══════════════════════════════════════════════════════════════ */
+
+function Confetti({ pieces = 32 }) {
+  const colors = ['hsl(26 95% 56%)', 'hsl(38 92% 60%)', 'hsl(160 64% 50%)', 'hsl(217 91% 65%)', 'hsl(340 80% 60%)'];
+  const items = useMemo(() => Array.from({ length: pieces }).map(() => ({
+    left: Math.random() * 100,
+    delay: Math.random() * 0.6,
+    duration: 1.8 + Math.random() * 1.6,
+    color: colors[Math.floor(Math.random() * colors.length)],
+    rotate: Math.random() * 360,
+    width: 6 + Math.random() * 6,
+    height: 8 + Math.random() * 8,
+  })), []);
   return (
-    <VisualFrame>
-      <div className="flex items-center gap-2 mb-3">
-        <div className="w-7 h-7 rounded-lg bg-violet-500/15 flex items-center justify-center">
-          <Dumbbell className="w-4 h-4 text-violet-500" />
-        </div>
-        <div className="flex-1">
-          <p className="text-[11px] font-bold tracking-tight text-foreground leading-none">Bench Press</p>
-          <p className="text-[9px] text-muted-foreground mt-0.5">Chest · 3 sets</p>
-        </div>
+    <div aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden z-10">
+      {items.map((p, i) => (
+        <motion.span key={i}
+          className="absolute top-0 rounded-sm"
+          style={{ left: `${p.left}%`, width: p.width, height: p.height, background: p.color, rotate: p.rotate }}
+          animate={{ y: ['0vh', '110vh'], opacity: [0, 1, 1, 0], rotate: [p.rotate, p.rotate + 360] }}
+          transition={{ duration: p.duration, delay: p.delay, ease: 'easeIn' }}
+        />
+      ))}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   SHARED: STEP HEADER (progress bar + back)
+═══════════════════════════════════════════════════════════════ */
+
+function StepHeader({ step, total, onBack }) {
+  return (
+    <div className="flex items-center gap-3 mb-7">
+      <button onClick={onBack} aria-label="Back"
+        className="w-9 h-9 rounded-xl border border-border/70 bg-card/70 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-card transition-colors shrink-0">
+        <Icon name="arrow-left" size={17} strokeWidth={2.5} />
+      </button>
+      <div className="flex-1 h-1.5 rounded-full bg-border/50 overflow-hidden">
+        <motion.div className="h-full rounded-full bg-primary"
+          initial={{ width: `${((step - 1) / total) * 100}%` }}
+          animate={{ width: `${(step / total) * 100}%` }}
+          transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }} />
       </div>
-      <div className="space-y-1.5">
-        {sets.map((s, i) => (
-          <motion.div
-            key={i}
-            initial={{ opacity: 0, x: -10 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ delay: 0.2 + i * 0.35, duration: 0.35, ease: 'easeOut' }}
-            className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-secondary/60"
-          >
-            <span className="text-[9px] font-bold text-muted-foreground w-8">SET {i + 1}</span>
-            <span className="text-[11px] font-semibold text-foreground flex-1">
-              {s.weight} <span className="text-[9px] text-muted-foreground">lb</span>
-              <span className="mx-1.5 text-muted-foreground">×</span>
-              {s.reps}
-            </span>
-            <motion.div
-              initial={{ scale: 0 }}
-              animate={{ scale: 1 }}
-              transition={{ delay: 0.4 + i * 0.35, type: 'spring', stiffness: 400, damping: 20 }}
-              className="w-4 h-4 rounded-full bg-emerald-500 flex items-center justify-center"
-            >
-              <Check className="w-2.5 h-2.5 text-white" strokeWidth={3.5} />
-            </motion.div>
+      <span className="font-mono text-[11px] font-semibold text-muted-foreground shrink-0 tracking-wider">
+        {String(step).padStart(2, '0')}<span className="opacity-40">/{String(total).padStart(2, '0')}</span>
+      </span>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   SHARED: KINETIC HEADING
+═══════════════════════════════════════════════════════════════ */
+
+function KineticHeading({ text, kicker, accentWord }) {
+  const words = text.split(' ');
+  return (
+    <div className="mb-2">
+      {kicker && (
+        <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05, duration: 0.4 }}
+          className="font-mono text-[11px] font-bold text-primary tracking-[0.18em] uppercase mb-2.5">
+          {kicker}
+        </motion.div>
+      )}
+      <h1 className="font-heading font-bold text-[30px] leading-[1.05] tracking-tight text-foreground m-0">
+        {words.map((w, i) => (
+          <motion.span key={i} initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.08 + i * 0.06, duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
+            className="inline-block mr-2"
+            style={{ color: w.replace(/[.,!?]/g, '') === accentWord ? 'hsl(var(--primary))' : undefined }}>
+            {w}
+          </motion.span>
+        ))}
+      </h1>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   SHARED: PRIMARY BUTTON
+═══════════════════════════════════════════════════════════════ */
+
+function PrimaryBtn({ onClick, disabled, children, className = '' }) {
+  return (
+    <button onClick={onClick} disabled={disabled}
+      className={`w-full h-14 rounded-2xl font-heading font-bold text-[15px] flex items-center justify-center gap-2 transition-all
+        ${disabled
+          ? 'bg-muted text-muted-foreground cursor-not-allowed opacity-60'
+          : 'bg-primary text-primary-foreground hover:brightness-105 active:scale-[0.98] shadow-lg shadow-primary/25'}
+        ${className}`}>
+      {children}
+    </button>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   FEATURE CAROUSEL (Welcome screen)
+═══════════════════════════════════════════════════════════════ */
+
+function FeatureCarousel() {
+  const [idx, setIdx] = useState(0);
+  const [paused, setPaused] = useState(false);
+  const DURATION = 3800;
+
+  useEffect(() => {
+    if (paused) return;
+    const t = setTimeout(() => setIdx(i => (i + 1) % FEATURES.length), DURATION);
+    return () => clearTimeout(t);
+  }, [idx, paused]);
+
+  const F = FEATURES[idx];
+
+  return (
+    <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.85, duration: 0.5 }}
+      onMouseEnter={() => setPaused(true)} onMouseLeave={() => setPaused(false)}
+      className="relative rounded-[20px] border border-border bg-card/85 backdrop-blur-xl overflow-hidden p-4">
+      {/* accent glow */}
+      <div className="absolute -top-10 -right-10 w-44 h-44 rounded-full blur-[40px] transition-all duration-700 pointer-events-none"
+        style={{ background: F.accent, opacity: 0.18 }} />
+      {/* card body */}
+      <AnimatePresence mode="wait">
+        <motion.div key={F.id} initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -12 }}
+          transition={{ duration: 0.45, ease: [0.16, 1, 0.3, 1] }}
+          className="flex items-center gap-3">
+          {/* eyebrow accent dot */}
+          <div className="w-12 h-12 rounded-2xl flex items-center justify-center shrink-0"
+            style={{ background: F.accent.replace(')', ' / 0.15)') }}>
+            <div className="w-5 h-5 rounded-full" style={{ background: F.accent }} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="font-mono text-[10px] font-bold tracking-[0.16em] uppercase mb-1" style={{ color: F.accent }}>{F.eyebrow}</div>
+            <div className="font-heading font-bold text-[16px] leading-tight tracking-tight text-foreground mb-1">{F.title}</div>
+            <div className="text-[12px] leading-relaxed text-muted-foreground">{F.sub}</div>
+          </div>
+        </motion.div>
+      </AnimatePresence>
+      {/* pip indicators */}
+      <div className="flex gap-1.5 mt-3.5 items-center">
+        {FEATURES.map((f, i) => (
+          <button key={f.id} onClick={() => setIdx(i)} aria-label={`Show ${f.eyebrow}`}
+            className="h-1 rounded-full transition-all duration-500 cursor-pointer border-none p-0"
+            style={{ width: i === idx ? 28 : 6, background: i === idx ? F.accent : 'hsl(var(--muted-foreground) / 0.3)' }} />
+        ))}
+      </div>
+    </motion.div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   STEP 1: WELCOME
+═══════════════════════════════════════════════════════════════ */
+
+function WelcomeStep({ onNext, onSignIn }) {
+  return (
+    <div className="flex flex-col h-full pt-3 gap-5 justify-between">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2.5">
+          <motion.div initial={{ scale: 0, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
+            transition={{ type: 'spring', stiffness: 400, damping: 20 }}
+            className="w-10 h-10 rounded-[12px] flex items-center justify-center relative overflow-hidden shadow-xl shadow-primary/40"
+            style={{ background: 'linear-gradient(135deg, hsl(var(--primary)), hsl(38 92% 60%))' }}>
+            <span className="absolute inset-0" style={{ background: 'radial-gradient(120% 100% at 50% 0%, hsl(0 0% 100% / 0.35), transparent 50%)' }} />
+            <span className="font-heading font-bold text-[22px] text-white relative tracking-tighter">F</span>
           </motion.div>
-        ))}
+          <motion.span initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.05, duration: 0.4 }}
+            className="font-heading font-bold text-[17px] tracking-tight text-foreground">Flexyn</motion.span>
+        </div>
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.1 }}
+          className="font-mono text-[10px] font-semibold text-muted-foreground tracking-[0.16em] uppercase">V 2.0</motion.div>
       </div>
-    </VisualFrame>
+
+      {/* Hero */}
+      <div>
+        <h1 className="font-heading font-bold text-[44px] leading-[0.97] tracking-[-0.045em] text-foreground m-0">
+          {[{w:'Train',d:0.15},{w:'like',d:0.25},{w:'you',d:0.35}].map(({w,d}) => (
+            <motion.span key={w} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: d, duration: 0.55, ease: [0.16,1,0.3,1] }}
+              className="inline-block mr-3">{w}</motion.span>
+          ))}
+          <br />
+          {[{w:'actually',d:0.45,c:false},{w:'mean',d:0.55,c:true},{w:'it.',d:0.65,c:false}].map(({w,d,c}) => (
+            <motion.span key={w} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: d, duration: 0.55, ease: [0.16,1,0.3,1] }}
+              className={`inline-block mr-3 ${c ? 'text-primary' : ''}`}>{w}</motion.span>
+          ))}
+        </h1>
+      </div>
+
+      {/* Feature carousel */}
+      <FeatureCarousel />
+
+      {/* CTAs */}
+      <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.95, duration: 0.4 }}
+        className="flex flex-col gap-2">
+        <PrimaryBtn onClick={onNext}>
+          Get started <Icon name="arrow-right" size={20} strokeWidth={2.5} />
+        </PrimaryBtn>
+        <button onClick={onSignIn}
+          className="text-sm text-muted-foreground hover:text-foreground transition-colors py-2 text-center">
+          I already have an account
+        </button>
+      </motion.div>
+    </div>
   );
 }
 
-function ProgressChartVisual() {
-  const points = [
-    { x: 8,   y: 110 },
-    { x: 56,  y: 96  },
-    { x: 104, y: 84  },
-    { x: 152, y: 70  },
-    { x: 200, y: 56  },
-    { x: 248, y: 42  },
-  ];
-  const path = points.reduce((acc, p, i) => acc + (i === 0 ? `M ${p.x} ${p.y}` : ` L ${p.x} ${p.y}`), '');
-  const areaPath = path + ` L ${points[points.length - 1].x} 140 L ${points[0].x} 140 Z`;
-  const labels = ['W1', 'W2', 'W3', 'W4', 'W5', 'W6'];
+/* ═══════════════════════════════════════════════════════════════
+   STEP 2: GOAL (multi-select)
+═══════════════════════════════════════════════════════════════ */
+
+function GoalStep({ value, onChange, onNext, onBack, step, total }) {
+  const selectedIds = Array.isArray(value) ? value : (value ? [value] : []);
+  const toggle = (id) => {
+    const has = selectedIds.includes(id);
+    onChange(has ? selectedIds.filter(x => x !== id) : [...selectedIds, id]);
+  };
+
+  const tailors = useMemo(() => {
+    const seen = new Set(); const out = [];
+    selectedIds.forEach(id => (GOAL_TAILORS[id] || []).forEach(t => { if (!seen.has(t)) { seen.add(t); out.push({ t, id }); } }));
+    return out;
+  }, [selectedIds]);
+
+  const primaryAccent = selectedIds.length ? (GOALS.find(g => g.id === selectedIds[0])?.accent || 'hsl(var(--primary))') : 'hsl(var(--primary))';
+
+  const helper = selectedIds.length === 0 ? 'Pick one or many — we tailor your plan to the combination.'
+    : selectedIds.length === 1 ? "Nice. Add another if you're after a few outcomes."
+    : selectedIds.length <= 3 ? `Stacking ${selectedIds.length} goals — we'll balance your plan.`
+    : 'Heads up: 4+ goals slows visible progress on each. Your call.';
+
   return (
-    <VisualFrame>
-      <div className="flex items-center justify-between mb-2">
-        <div>
-          <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground leading-none">Bench Press</p>
-          <p className="text-[14px] font-bold text-foreground mt-1 leading-none">+18% <span className="text-[9px] font-semibold text-emerald-500">this month</span></p>
+    <div className="flex flex-col h-full">
+      <StepHeader step={step} total={total} onBack={onBack} />
+      <div className="flex-1 overflow-y-auto space-y-3 pb-4">
+        <KineticHeading kicker="Goal · 01" text="What are you here for?" accentWord="for?" />
+        <p className="text-sm text-muted-foreground mt-1.5 mb-4 min-h-[40px] transition-all">{helper}</p>
+
+        {/* Counter row */}
+        <div className="flex items-center justify-between mb-3">
+          <span className="font-mono text-[10px] font-bold text-muted-foreground tracking-[0.16em] uppercase">
+            {selectedIds.length === 0 ? 'Select goals' : `${selectedIds.length} selected`}
+          </span>
+          {selectedIds.length > 0 && (
+            <motion.button initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }}
+              onClick={() => onChange([])}
+              className="font-mono text-[10px] font-bold text-muted-foreground tracking-widest uppercase px-2 py-1 rounded hover:text-foreground transition-colors border-none bg-transparent cursor-pointer">
+              Clear
+            </motion.button>
+          )}
         </div>
-        <TrendingUp className="w-4 h-4 text-emerald-500" />
+
+        {/* Goal cards */}
+        <div className="space-y-2.5">
+          {GOALS.map((g, i) => {
+            const selected = selectedIds.includes(g.id);
+            const order = selectedIds.indexOf(g.id) + 1;
+            return (
+              <motion.button key={g.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.05 + i * 0.07, duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
+                onClick={() => toggle(g.id)}
+                className="w-full flex items-center gap-3 px-4 py-3.5 rounded-2xl border text-left cursor-pointer transition-all"
+                style={{
+                  borderColor: selected ? g.accent : 'hsl(var(--border))',
+                  background: selected ? g.accent.replace(')', ' / 0.07)') : 'hsl(var(--card))',
+                  boxShadow: selected ? `0 8px 24px -10px ${g.accent.replace(')', ' / 0.4)')}` : 'none',
+                }}>
+                {/* icon */}
+                <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 transition-all"
+                  style={{
+                    background: selected ? g.accent.replace(')', ' / 0.18)') : 'hsl(var(--secondary))',
+                    color: selected ? g.accent : 'hsl(var(--muted-foreground))',
+                  }}>
+                  <Icon name={g.icon} size={20} strokeWidth={2} />
+                </div>
+                {/* text */}
+                <div className="flex-1 min-w-0">
+                  <div className="font-heading font-bold text-[15px] text-foreground leading-tight">{g.title}</div>
+                  <div className="text-[12px] text-muted-foreground mt-0.5">{g.sub}</div>
+                </div>
+                {/* checkbox */}
+                <div className="w-6 h-6 rounded-[7px] flex items-center justify-center shrink-0 transition-all font-mono text-[11px] font-bold text-white"
+                  style={{
+                    border: selected ? `2px solid ${g.accent}` : '1.5px solid hsl(var(--border))',
+                    background: selected ? g.accent : 'transparent',
+                    color: 'white',
+                  }}>
+                  {selected && (selectedIds.length > 1
+                    ? <span>{order}</span>
+                    : <Icon name="check" size={13} strokeWidth={3} color="white" />)}
+                </div>
+              </motion.button>
+            );
+          })}
+        </div>
+
+        {/* Live tailoring preview */}
+        <AnimatePresence>
+          {tailors.length > 0 && (
+            <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}
+              className="overflow-hidden mt-4 p-3.5 rounded-2xl border bg-card/70 backdrop-blur-sm relative">
+              <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full blur-[30px] pointer-events-none transition-all duration-500"
+                style={{ background: primaryAccent, opacity: 0.12 }} />
+              <div className="font-mono text-[9.5px] font-bold text-muted-foreground tracking-[0.18em] uppercase mb-2.5 flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full" style={{ background: primaryAccent, boxShadow: `0 0 8px ${primaryAccent}` }} />
+                Tailoring your plan
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {tailors.slice(0, 6).map(({ t, id }, i) => {
+                  const accent = GOALS.find(g => g.id === id)?.accent || 'hsl(var(--primary))';
+                  return (
+                    <motion.span key={t} initial={{ opacity: 0, scale: 0.85 }} animate={{ opacity: 1, scale: 1 }}
+                      transition={{ delay: i * 0.05, type: 'spring', stiffness: 400, damping: 18 }}
+                      className="px-2.5 py-1 rounded-full font-mono text-[10.5px] font-semibold tracking-tight"
+                      style={{ color: accent, background: accent.replace(')', ' / 0.1)'), border: `1px solid ${accent.replace(')', ' / 0.25)')}` }}>
+                      {t}
+                    </motion.span>
+                  );
+                })}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
-      <svg viewBox="0 0 264 152" className="w-full h-[110px]" preserveAspectRatio="none">
-        {[35, 70, 105].map(y => (
-          <line key={y} x1="0" x2="264" y1={y} y2={y} stroke="hsl(var(--border))" strokeWidth="0.5" strokeDasharray="2 3" opacity="0.6" />
-        ))}
-        <motion.path
-          d={areaPath}
-          fill="hsl(var(--primary))"
-          fillOpacity="0.12"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 1.0, duration: 0.5 }}
-        />
-        <motion.path
-          d={path}
-          fill="none"
-          stroke="hsl(var(--primary))"
-          strokeWidth="2.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          initial={{ pathLength: 0 }}
-          animate={{ pathLength: 1 }}
-          transition={{ duration: 1.1, ease: 'easeInOut' }}
-        />
-        {points.map((p, i) => (
-          <motion.circle
-            key={i}
-            cx={p.x} cy={p.y}
-            r={i === points.length - 1 ? 4 : 2.5}
-            fill="hsl(var(--primary))"
-            stroke="hsl(var(--background))"
-            strokeWidth={i === points.length - 1 ? 2 : 1}
-            initial={{ scale: 0, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            transition={{ delay: 0.2 + i * 0.18, type: 'spring', stiffness: 300, damping: 18 }}
-          />
-        ))}
-      </svg>
-      <div className="flex justify-between mt-1">
-        {labels.map(l => (
-          <span key={l} className="text-[8px] text-muted-foreground">{l}</span>
-        ))}
+
+      <div className="pt-4 shrink-0">
+        <PrimaryBtn onClick={onNext} disabled={selectedIds.length === 0}>
+          {selectedIds.length === 0 ? 'Pick at least one'
+            : selectedIds.length === 1 ? 'Continue'
+            : `Continue with ${selectedIds.length}`}
+          <Icon name="arrow-right" size={18} strokeWidth={2.5} />
+        </PrimaryBtn>
       </div>
-    </VisualFrame>
+    </div>
   );
 }
 
-function MacrosVisual() {
-  const macros = [
-    { label: 'Protein', short: 'P', value: 142, target: 165, color: 'hsl(217 91% 60%)' },
-    { label: 'Carbs',   short: 'C', value: 218, target: 280, color: 'hsl(38 92% 55%)'  },
-    { label: 'Fats',    short: 'F', value: 58,  target: 75,  color: 'hsl(160 64% 45%)' },
-  ];
-  const R = 22;
-  const C = 2 * Math.PI * R;
+/* ═══════════════════════════════════════════════════════════════
+   STEP 3: EXPERIENCE
+═══════════════════════════════════════════════════════════════ */
+
+function ExperienceStep({ value, onChange, onNext, onBack, step, total }) {
+  const current = LEVELS.find(l => l.id === value) || null;
   return (
-    <VisualFrame>
-      <div className="flex items-center gap-2 mb-3">
-        <div className="w-7 h-7 rounded-lg bg-emerald-500/15 flex items-center justify-center">
-          <Apple className="w-4 h-4 text-emerald-500" />
-        </div>
-        <div className="flex-1">
-          <p className="text-[11px] font-bold tracking-tight text-foreground leading-none">Today's Macros</p>
-          <p className="text-[9px] text-muted-foreground mt-0.5">2,140 / 2,400 kcal</p>
+    <div className="flex flex-col h-full">
+      <StepHeader step={step} total={total} onBack={onBack} />
+      <div className="flex-1 overflow-y-auto pb-4">
+        <KineticHeading kicker="Experience · 02" text="How long have you been training?" accentWord="training?" />
+        <p className="text-sm text-muted-foreground mt-2 mb-6">Honest answers get you a better program.</p>
+
+        {/* Visual rep meter */}
+        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1, duration: 0.45 }}
+          className="rounded-2xl border bg-card p-5 mb-4 relative overflow-hidden">
+          {/* bars */}
+          <div className="flex items-end gap-2 h-20 mb-4">
+            {[1, 2, 3, 4].map(b => {
+              const active = current ? b <= current.bars : false;
+              const heights = ['25%', '45%', '70%', '100%'];
+              return (
+                <motion.div key={b} className="flex-1 rounded-t-lg relative overflow-hidden"
+                  animate={{ height: heights[b - 1], background: active ? 'hsl(var(--primary))' : 'hsl(var(--secondary))' }}
+                  transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
+                  style={{ boxShadow: active ? '0 6px 20px -8px hsl(var(--primary) / 0.55)' : 'none' }}>
+                  {active && b === (current?.bars || 0) && (
+                    <div className="absolute inset-0" style={{ background: 'linear-gradient(180deg, hsl(0 0% 100% / 0.28), transparent 40%)' }} />
+                  )}
+                </motion.div>
+              );
+            })}
+          </div>
+          <AnimatePresence mode="wait">
+            <motion.div key={current?.id || 'none'} initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }}>
+              <div className="font-heading font-bold text-2xl tracking-tight text-foreground">
+                {current?.label || <span className="text-muted-foreground text-base">Choose below</span>}
+              </div>
+              {current && <div className="text-sm text-muted-foreground mt-1">{current.desc}</div>}
+            </motion.div>
+          </AnimatePresence>
+        </motion.div>
+
+        {/* Level list */}
+        <div className="space-y-2">
+          {LEVELS.map((l, i) => {
+            const selected = value === l.id;
+            return (
+              <motion.button key={l.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.15 + i * 0.05, duration: 0.4 }}
+                onClick={() => onChange(l.id)}
+                className="w-full flex items-center gap-3 px-4 py-3.5 rounded-2xl border cursor-pointer transition-all text-left"
+                style={{
+                  borderColor: selected ? 'hsl(var(--primary))' : 'hsl(var(--border))',
+                  background: selected ? 'hsl(var(--primary) / 0.06)' : 'hsl(var(--card))',
+                }}>
+                {/* mini bar chart */}
+                <div className="flex items-end gap-0.5 shrink-0">
+                  {[1, 2, 3, 4].map(b => (
+                    <span key={b} className="block rounded-sm transition-colors"
+                      style={{ width: 4, height: b * 5 + 4, background: b <= l.bars ? 'hsl(var(--primary))' : 'hsl(var(--border))' }} />
+                  ))}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="font-heading font-semibold text-[14px] text-foreground">{l.label}</div>
+                  <div className="text-[12px] text-muted-foreground mt-0.5">{l.sub}</div>
+                </div>
+                {selected && <Icon name="check" size={16} strokeWidth={3} color="hsl(var(--primary))" />}
+              </motion.button>
+            );
+          })}
         </div>
       </div>
-      <div className="flex items-center justify-around mt-1">
-        {macros.map((m, i) => {
-          const pct = m.value / m.target;
+
+      <div className="pt-4 shrink-0">
+        <PrimaryBtn onClick={onNext} disabled={!value}>
+          Continue <Icon name="arrow-right" size={18} strokeWidth={2.5} />
+        </PrimaryBtn>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   SCRUBBER COMPONENT (drag ruler)
+═══════════════════════════════════════════════════════════════ */
+
+function Scrubber({ min, max, value, onChange, majorEvery = 5 }) {
+  const trackRef = useRef(null);
+  const dragRef = useRef({ down: false, startX: 0, startVal: value });
+  const PX_PER_UNIT = 14;
+  const [width, setWidth] = useState(320);
+
+  useEffect(() => {
+    const update = () => { if (trackRef.current) setWidth(trackRef.current.offsetWidth); };
+    update();
+    const ro = new ResizeObserver(update);
+    if (trackRef.current) ro.observe(trackRef.current);
+    return () => ro.disconnect();
+  }, []);
+
+  const onDown = useCallback((e) => {
+    e.preventDefault();
+    const x = e.clientX ?? e.touches?.[0]?.clientX ?? 0;
+    dragRef.current = { down: true, startX: x, startVal: value };
+  }, [value]);
+
+  const onMove = useCallback((e) => {
+    if (!dragRef.current.down) return;
+    const x = e.clientX ?? e.touches?.[0]?.clientX ?? 0;
+    const delta = Math.round(-(x - dragRef.current.startX) / PX_PER_UNIT);
+    const next = Math.min(max, Math.max(min, dragRef.current.startVal + delta));
+    if (next !== value) {
+      onChange(next);
+      if (navigator.vibrate) navigator.vibrate(1);
+    }
+  }, [min, max, value, onChange]);
+
+  const onUp = useCallback(() => { dragRef.current.down = false; }, []);
+
+  useEffect(() => {
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('touchmove', onMove, { passive: false });
+    window.addEventListener('touchend', onUp);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('touchmove', onMove);
+      window.removeEventListener('touchend', onUp);
+    };
+  }, [onMove, onUp]);
+
+  const ticks = useMemo(() => { const a = []; for (let v = min; v <= max; v++) a.push(v); return a; }, [min, max]);
+  const offset = -value * PX_PER_UNIT + width / 2;
+
+  return (
+    <div ref={trackRef} className="relative h-16 overflow-hidden cursor-grab select-none touch-none"
+      onPointerDown={onDown} onTouchStart={onDown}>
+      {/* fade edges */}
+      <div className="absolute inset-y-0 left-0 w-12 z-10 pointer-events-none" style={{ background: 'linear-gradient(90deg, hsl(var(--card)), transparent)' }} />
+      <div className="absolute inset-y-0 right-0 w-12 z-10 pointer-events-none" style={{ background: 'linear-gradient(270deg, hsl(var(--card)), transparent)' }} />
+      {/* cursor line */}
+      <div className="absolute left-1/2 top-0 bottom-0 w-0.5 -translate-x-1/2 z-10 rounded-full bg-primary shadow-[0_0_8px_hsl(var(--primary))]" />
+      {/* ticks */}
+      <div className="absolute inset-0" style={{ transform: `translateX(${offset}px)`, transition: dragRef.current.down ? 'none' : 'transform 0.2s cubic-bezier(0.16,1,0.3,1)' }}>
+        {ticks.map(t => {
+          const isMajor = t % majorEvery === 0;
+          const isMid = t % Math.floor(majorEvery / 2 || 1) === 0 && !isMajor;
           return (
-            <div key={m.label} className="flex flex-col items-center gap-1.5">
-              <svg width="56" height="56" viewBox="0 0 56 56">
-                <circle cx="28" cy="28" r={R} fill="none" stroke="hsl(var(--border))" strokeWidth="4" opacity="0.4" />
-                <motion.circle
-                  cx="28" cy="28" r={R}
-                  fill="none"
-                  stroke={m.color}
-                  strokeWidth="4"
-                  strokeLinecap="round"
-                  strokeDasharray={C}
-                  initial={{ strokeDashoffset: C }}
-                  animate={{ strokeDashoffset: C * (1 - pct) }}
-                  transition={{ delay: 0.15 + i * 0.18, duration: 1.0, ease: 'easeOut' }}
-                  transform="rotate(-90 28 28)"
-                />
-                <text x="28" y="32" textAnchor="middle" fontSize="11" fill="hsl(var(--foreground))" fontWeight="bold">{m.short}</text>
-              </svg>
-              <span className="text-[9px] font-semibold text-foreground">{m.value}<span className="text-muted-foreground">/{m.target}g</span></span>
+            <span key={t} className="absolute top-0 flex flex-col items-center" style={{ left: t * PX_PER_UNIT, transform: 'translateX(-50%)' }}>
+              <span className="block rounded-full"
+                style={{
+                  width: 1.5, height: isMajor ? 28 : isMid ? 16 : 10,
+                  background: t === value ? 'hsl(var(--primary))' : 'hsl(var(--muted-foreground) / 0.4)',
+                  marginTop: isMajor ? 8 : isMid ? 14 : 18,
+                }} />
+              {isMajor && (
+                <span className="font-mono text-[9px] font-semibold mt-1 tracking-wide transition-colors"
+                  style={{ color: t === value ? 'hsl(var(--primary))' : 'hsl(var(--muted-foreground))' }}>
+                  {t}
+                </span>
+              )}
+            </span>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   STEP 4: STATS (username + age + height + weight)
+═══════════════════════════════════════════════════════════════ */
+
+function UnitToggle({ options, value, onChange }) {
+  return (
+    <div className="flex bg-secondary rounded-xl p-0.5 gap-0.5">
+      {options.map(o => (
+        <button key={o.id} onClick={() => onChange(o.id)}
+          className="px-3 py-1.5 font-mono text-[10px] font-bold tracking-widest uppercase rounded-[10px] transition-all cursor-pointer"
+          style={{
+            background: value === o.id ? 'hsl(var(--card))' : 'transparent',
+            color: value === o.id ? 'hsl(var(--foreground))' : 'hsl(var(--muted-foreground))',
+            boxShadow: value === o.id ? '0 2px 6px hsl(0 0% 0% / 0.07)' : 'none',
+            border: 'none',
+          }}>
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function StatCard({ icon, label, value, unit, min, max, majorEvery = 5, onChange, unitToggle, suffix }) {
+  return (
+    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
+      className="rounded-2xl border bg-card p-4 pb-2">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <Icon name={icon} size={15} strokeWidth={2} color="hsl(var(--muted-foreground))" />
+          <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">{label}</span>
+        </div>
+        {unitToggle}
+      </div>
+      {/* Big value display */}
+      <div className="flex items-baseline justify-center gap-2 mb-1">
+        <motion.span key={value} initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
+          className="font-heading font-bold text-[40px] leading-none tracking-tight text-foreground">
+          {value}
+        </motion.span>
+        <span className="font-heading font-semibold text-xl text-muted-foreground">{unit}</span>
+        {suffix && <span className="font-mono text-[11px] text-muted-foreground ml-1">{suffix}</span>}
+      </div>
+      <Scrubber min={min} max={max} value={value} onChange={onChange} majorEvery={majorEvery} />
+    </motion.div>
+  );
+}
+
+function StatsStep({ username, onUsernameChange, stats, onChange, onNext, onBack, step, total, usernameError }) {
+  const ageOk = stats.age >= 14 && stats.age <= 80;
+  const userOk = username.trim().length >= 2 && !usernameError;
+  const canNext = ageOk && userOk;
+
+  return (
+    <div className="flex flex-col h-full">
+      <StepHeader step={step} total={total} onBack={onBack} />
+      <div className="flex-1 overflow-y-auto space-y-3 pb-4">
+        <KineticHeading kicker="Stats · 03" text="A few numbers, then we're done." accentWord="numbers," />
+        <p className="text-sm text-muted-foreground mt-2 mb-4">Drag to set. Encrypted, never sold.</p>
+
+        {/* Username */}
+        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="rounded-2xl border bg-card p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <Icon name="user" size={15} color="hsl(var(--muted-foreground))" />
+            <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Username</span>
+          </div>
+          <input
+            type="text"
+            value={username}
+            onChange={e => onUsernameChange(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ''))}
+            placeholder="e.g. jordan_lifts"
+            className="w-full h-12 rounded-xl border border-border bg-secondary/50 px-4 font-mono text-[15px] font-medium text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30 transition-all"
+          />
+          {usernameError && <p className="text-xs text-destructive mt-1.5">{usernameError}</p>}
+          <p className="text-xs text-muted-foreground mt-1.5">Lowercase, numbers and underscores only</p>
+        </motion.div>
+
+        {/* Age */}
+        <StatCard icon="user" label="Age" value={stats.age} unit="yrs" min={14} max={80} majorEvery={5}
+          onChange={v => onChange({ ...stats, age: v })}
+          suffix={stats.age < 18 ? 'guardian consent reqd' : ''} />
+
+        {/* Height */}
+        <StatCard
+          icon="ruler" label="Height"
+          value={stats.heightUnit === 'cm' ? stats.heightCm : stats.heightIn}
+          unit={stats.heightUnit === 'cm' ? 'cm' : 'in'}
+          min={stats.heightUnit === 'cm' ? 120 : 48} max={stats.heightUnit === 'cm' ? 220 : 84}
+          majorEvery={stats.heightUnit === 'cm' ? 10 : 6}
+          onChange={v => stats.heightUnit === 'cm' ? onChange({ ...stats, heightCm: v }) : onChange({ ...stats, heightIn: v })}
+          unitToggle={<UnitToggle options={[{id:'cm',label:'cm'},{id:'in',label:'in'}]} value={stats.heightUnit} onChange={u => onChange({ ...stats, heightUnit: u })} />}
+          suffix={stats.heightUnit === 'in' ? `${Math.floor(stats.heightIn / 12)}'${stats.heightIn % 12}"` : ''}
+        />
+
+        {/* Weight */}
+        <StatCard
+          icon="scale" label="Weight"
+          value={stats.weightUnit === 'kg' ? stats.weightKg : stats.weightLb}
+          unit={stats.weightUnit}
+          min={stats.weightUnit === 'kg' ? 35 : 80} max={stats.weightUnit === 'kg' ? 200 : 440}
+          majorEvery={stats.weightUnit === 'kg' ? 10 : 20}
+          onChange={v => stats.weightUnit === 'kg' ? onChange({ ...stats, weightKg: v }) : onChange({ ...stats, weightLb: v })}
+          unitToggle={<UnitToggle options={[{id:'kg',label:'kg'},{id:'lb',label:'lb'}]} value={stats.weightUnit} onChange={u => onChange({ ...stats, weightUnit: u })} />}
+        />
+      </div>
+
+      <div className="pt-4 shrink-0">
+        <PrimaryBtn onClick={onNext} disabled={!canNext}>
+          Continue <Icon name="arrow-right" size={18} strokeWidth={2.5} />
+        </PrimaryBtn>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   STEP 5: SCHEDULE
+═══════════════════════════════════════════════════════════════ */
+
+function DaysStep({ days, preferredTime, onDaysChange, onTimeChange, onNext, onBack, step, total }) {
+  const toggle = (i) => {
+    const next = days.includes(i) ? days.filter(d => d !== i) : [...days, i];
+    onDaysChange(next);
+    if (navigator.vibrate) navigator.vibrate(4);
+  };
+  const count = days.length;
+  const intensityLabel = count === 0 ? '—' : count <= 2 ? 'Light cadence' : count <= 4 ? 'Balanced' : count <= 5 ? 'Serious' : 'Hardcore';
+
+  return (
+    <div className="flex flex-col h-full">
+      <StepHeader step={step} total={total} onBack={onBack} />
+      <div className="flex-1 overflow-y-auto pb-4 space-y-5">
+        <KineticHeading kicker="Schedule · 04" text="Which days can you train?" accentWord="train?" />
+        <p className="text-sm text-muted-foreground mt-2">Plan around real life — we'll keep recovery in check.</p>
+
+        {/* Count card */}
+        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
+          className="rounded-2xl border bg-card p-5 text-center relative overflow-hidden">
+          <div className="absolute inset-0 pointer-events-none transition-all duration-500"
+            style={{ background: `radial-gradient(80% 60% at 50% 0%, hsl(var(--primary) / ${0.04 + count * 0.025}), transparent 70%)` }} />
+          <div className="relative flex items-baseline justify-center gap-2">
+            <motion.span key={count} initial={{ scale: 0.7, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
+              className="font-heading font-bold text-[52px] leading-none tracking-tight text-foreground">
+              {count}
+            </motion.span>
+            <span className="font-heading font-semibold text-xl text-muted-foreground">days · week</span>
+          </div>
+          <div className="relative font-mono text-[11px] font-bold tracking-[0.18em] uppercase text-primary mt-1">{intensityLabel}</div>
+        </motion.div>
+
+        {/* Day grid */}
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.1 }}
+          className="grid grid-cols-7 gap-2">
+          {WEEKDAYS.map((d, i) => {
+            const selected = days.includes(i);
+            return (
+              <button key={d} onClick={() => toggle(i)}
+                className="flex flex-col items-center gap-1 py-3 rounded-xl border cursor-pointer transition-all font-medium"
+                style={{
+                  borderColor: selected ? 'hsl(var(--primary))' : 'hsl(var(--border))',
+                  background: selected ? 'hsl(var(--primary))' : 'hsl(var(--card))',
+                  color: selected ? 'hsl(var(--primary-foreground))' : 'hsl(var(--muted-foreground))',
+                }}>
+                <span className="text-[11px]">{d}</span>
+                <span className="w-1.5 h-1.5 rounded-full"
+                  style={{ background: selected ? 'currentColor' : 'hsl(var(--border))' }} />
+              </button>
+            );
+          })}
+        </motion.div>
+
+        {/* Preferred time */}
+        <div>
+          <div className="font-mono text-[11px] font-semibold tracking-[0.12em] uppercase text-muted-foreground mb-3">Preferred time</div>
+          <div className="grid grid-cols-2 gap-2">
+            {TIMES.map(t => (
+              <button key={t} onClick={() => onTimeChange(t)}
+                className="py-3 rounded-xl border text-sm font-medium cursor-pointer transition-all"
+                style={{
+                  borderColor: preferredTime === t ? 'hsl(var(--primary))' : 'hsl(var(--border))',
+                  background: preferredTime === t ? 'hsl(var(--primary) / 0.07)' : 'hsl(var(--card))',
+                  color: preferredTime === t ? 'hsl(var(--primary))' : 'hsl(var(--muted-foreground))',
+                }}>
+                {t}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="pt-4 shrink-0">
+        <PrimaryBtn onClick={onNext} disabled={count === 0}>
+          Build my plan <Icon name="arrow-right" size={18} strokeWidth={2.5} />
+        </PrimaryBtn>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   STEP 6: LOADING
+═══════════════════════════════════════════════════════════════ */
+
+function LoadingStep({ onDone }) {
+  const [step, setStep] = useState(0);
+  useEffect(() => {
+    if (step >= LOADING_TASKS.length) { const t = setTimeout(onDone, 600); return () => clearTimeout(t); }
+    const t = setTimeout(() => setStep(s => s + 1), 720);
+    return () => clearTimeout(t);
+  }, [step, onDone]);
+
+  return (
+    <div className="flex flex-col items-center justify-center h-full gap-4">
+      {/* Logo animation */}
+      <motion.div className="relative w-28 h-28 flex items-center justify-center mb-2"
+        animate={{ scale: [1, 1.04, 1] }} transition={{ duration: 2.4, repeat: Infinity, ease: 'easeInOut' }}>
+        {[0, 1, 2].map(i => (
+          <motion.div key={i} className="absolute rounded-full border border-primary/25"
+            style={{ inset: i * -14 }}
+            animate={{ opacity: [0.5, 0.1, 0.5], scale: [1, 1.08, 1] }}
+            transition={{ duration: 2.2, delay: i * 0.4, repeat: Infinity, ease: 'easeInOut' }} />
+        ))}
+        <div className="w-20 h-20 rounded-[22px] flex items-center justify-center shadow-2xl shadow-primary/40"
+          style={{ background: 'linear-gradient(135deg, hsl(var(--primary)), hsl(38 92% 60%))' }}>
+          <span className="font-heading font-bold text-3xl text-white tracking-tighter">F</span>
+        </div>
+      </motion.div>
+
+      <h2 className="font-heading font-bold text-2xl tracking-tight text-foreground text-center">Building your plan</h2>
+      <p className="text-sm text-muted-foreground text-center">Tuned to your goal · experience · schedule</p>
+
+      <div className="w-full max-w-xs space-y-3 mt-4">
+        {LOADING_TASKS.map((task, i) => {
+          const done = i < step;
+          const active = i === step;
+          return (
+            <div key={task} className="flex items-center gap-3 transition-opacity duration-300"
+              style={{ opacity: i <= step ? 1 : 0.35 }}>
+              <div className="w-5 h-5 rounded-full flex items-center justify-center shrink-0 relative"
+                style={{
+                  background: done ? 'hsl(var(--primary))' : 'transparent',
+                  border: done ? 'none' : `1.5px solid hsl(var(--${active ? 'primary' : 'border'}))`,
+                }}>
+                {done && <Icon name="check" size={11} strokeWidth={3.5} color="white" />}
+                {active && (
+                  <motion.span className="absolute inset-0.5 rounded-full border border-primary border-t-transparent"
+                    animate={{ rotate: 360 }} transition={{ duration: 0.9, repeat: Infinity, ease: 'linear' }} />
+                )}
+              </div>
+              <span className="text-sm transition-all" style={{ color: done ? 'hsl(var(--foreground))' : 'hsl(var(--muted-foreground))', fontWeight: active ? 600 : 400 }}>
+                {task}
+              </span>
             </div>
           );
         })}
       </div>
-    </VisualFrame>
+    </div>
   );
 }
 
-function GoalsVisual() {
-  const goalPct = 0.72;
+/* ═══════════════════════════════════════════════════════════════
+   STEP 7: REVEAL
+═══════════════════════════════════════════════════════════════ */
+
+function RevealStep({ data, onNext }) {
+  const goalIds = Array.isArray(data.goal) ? data.goal : (data.goal ? [data.goal] : []);
+  const primaryGoal = GOALS.find(g => g.id === goalIds[0]) || GOALS[0];
+  const extraGoalCount = Math.max(0, goalIds.length - 1);
+  const level = LEVELS.find(l => l.id === data.level) || LEVELS[0];
+  const daysCount = data.days.length;
+  const weeklyVol = Math.round(80 + (level?.bars || 1) * 30 + daysCount * 12 + extraGoalCount * 14);
+  const weeks = (level?.bars || 1) >= 3 ? 12 : 8;
+
   return (
-    <VisualFrame>
-      <div className="flex items-center gap-2 mb-3">
-        <motion.div
-          initial={{ rotate: -10, scale: 0.85 }}
-          animate={{ rotate: 0, scale: 1 }}
-          transition={{ type: 'spring', stiffness: 300, damping: 14, delay: 0.1 }}
-          className="w-7 h-7 rounded-lg bg-amber-500/15 flex items-center justify-center"
-        >
-          <Trophy className="w-4 h-4 text-amber-500" />
+    <div className="flex flex-col h-full">
+      <Confetti pieces={28} />
+      <div className="flex-1 overflow-y-auto pb-4 pt-2">
+        <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}
+          className="font-mono text-[11px] font-bold tracking-[0.18em] text-primary uppercase mb-4">
+          Plan ready · 100%
         </motion.div>
-        <div className="flex-1">
-          <p className="text-[11px] font-bold tracking-tight text-foreground leading-none">Squat 315 lb</p>
-          <p className="text-[9px] text-muted-foreground mt-0.5">Goal · 6 weeks left</p>
-        </div>
-      </div>
-      <div className="mb-1 mt-2">
-        <div className="flex items-center justify-between mb-1.5">
-          <span className="text-[9px] font-semibold text-muted-foreground">CURRENT</span>
-          <motion.span
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 1.2, duration: 0.3 }}
-            className="text-[10px] font-bold text-foreground"
-          >
-            225 lb · 71%
-          </motion.span>
-        </div>
-        <div className="relative h-2.5 rounded-full bg-secondary overflow-hidden">
-          <motion.div
-            initial={{ width: 0 }}
-            animate={{ width: `${goalPct * 100}%` }}
-            transition={{ duration: 1.2, ease: 'easeOut', delay: 0.2 }}
-            className="absolute left-0 top-0 h-full rounded-full"
-            style={{ background: 'linear-gradient(90deg, hsl(var(--primary)), hsl(38 92% 55%))' }}
-          />
-        </div>
-      </div>
-      <div className="flex gap-1.5 mt-3">
-        {[
-          { label: 'First PR',    color: 'bg-blue-500/15 text-blue-500'       },
-          { label: '30-Day',      color: 'bg-emerald-500/15 text-emerald-500' },
-          { label: '10 Workouts', color: 'bg-amber-500/15 text-amber-500'     },
-        ].map((b, i) => (
-          <motion.span
-            key={b.label}
-            initial={{ opacity: 0, y: 6 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.6 + i * 0.12, duration: 0.35 }}
-            className={`text-[8px] font-bold px-1.5 py-1 rounded-md flex items-center gap-1 ${b.color}`}
-          >
-            <Medal className="w-2.5 h-2.5" />
-            {b.label}
-          </motion.span>
-        ))}
-      </div>
-    </VisualFrame>
-  );
-}
 
-function HubVisual() {
-  return (
-    <VisualFrame>
-      <div className="flex items-center gap-2 mb-3">
-        <div className="w-7 h-7 rounded-lg bg-rose-500/15 flex items-center justify-center">
-          <Users className="w-4 h-4 text-rose-500" />
-        </div>
-        <p className="text-[11px] font-bold tracking-tight text-foreground leading-none flex-1">The Hub</p>
-        <span className="text-[8px] text-muted-foreground">Just now</span>
-      </div>
-      <motion.div
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.15, duration: 0.4 }}
-        className="rounded-xl bg-secondary/60 p-2.5"
-      >
-        <div className="flex items-center gap-2 mb-1.5">
-          <div className="w-6 h-6 rounded-full bg-gradient-to-br from-violet-500 to-rose-500 flex items-center justify-center text-white text-[9px] font-bold">JL</div>
-          <div className="flex-1">
-            <p className="text-[10px] font-bold text-foreground leading-none">@jordan_lifts</p>
-            <p className="text-[8px] text-muted-foreground mt-0.5">crushed leg day 🦵</p>
-          </div>
-        </div>
-        <div className="rounded-lg bg-card px-2 py-1.5 mb-2">
-          <p className="text-[9px] text-muted-foreground">Squat</p>
-          <p className="text-[11px] font-bold text-foreground leading-tight">5 × 5 @ 245 lb</p>
-        </div>
-        <div className="flex items-center gap-3">
-          <motion.div
-            initial={{ scale: 1 }}
-            animate={{ scale: [1, 1.25, 1] }}
-            transition={{ delay: 0.9, duration: 0.5, ease: 'easeInOut' }}
-            className="flex items-center gap-1"
-          >
-            <span className="text-[11px]">🔥</span>
-            <FlameCounter />
-          </motion.div>
-          <span className="text-[9px] text-muted-foreground">3 comments</span>
-        </div>
-      </motion.div>
-    </VisualFrame>
-  );
-}
+        <h1 className="font-heading font-bold text-[38px] leading-[1.0] tracking-tight text-foreground m-0 mb-4">
+          <motion.span initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2, duration: 0.55, ease: [0.16,1,0.3,1] }} className="inline-block mr-3">Welcome</motion.span>
+          <motion.span initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3, duration: 0.55, ease: [0.16,1,0.3,1] }} className="inline-block mr-3">in,</motion.span>
+          <br />
+          <motion.span initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4, duration: 0.55, ease: [0.16,1,0.3,1] }} className="inline-block text-primary">{data.username || 'lifter'}.</motion.span>
+        </h1>
 
-function FlameCounter() {
-  const [n, setN] = useState(11);
-  useEffect(() => {
-    const t = setTimeout(() => setN(12), 900);
-    return () => clearTimeout(t);
-  }, []);
-  return <span className="text-[9px] font-bold text-foreground tabular-nums">{n}</span>;
-}
+        <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.55 }}
+          className="text-[14px] text-muted-foreground leading-relaxed mb-6 max-w-xs">
+          A <strong className="text-foreground">{weeks}-week</strong> {primaryGoal.title.toLowerCase()}
+          {extraGoalCount > 0 && <> + <strong className="text-foreground">{extraGoalCount} more</strong></>} block,
+          dialled in for a <strong className="text-foreground">{level?.label.toLowerCase()}</strong> lifter on{' '}
+          <strong className="text-foreground">{daysCount} days</strong>.
+        </motion.p>
 
-function LeaderboardVisual() {
-  const rows = [
-    { rank: 1, handle: '@alex_iron',  value: 12480, color: 'from-amber-400 to-amber-600',   medal: '🥇' },
-    { rank: 2, handle: '@sam_strong', value: 11220, color: 'from-slate-300 to-slate-500',   medal: '🥈' },
-    { rank: 3, handle: '@you',        value: 10580, color: 'from-orange-400 to-orange-600', medal: '🥉', isYou: true },
-  ];
-  const max = rows[0].value;
-  return (
-    <VisualFrame>
-      <div className="flex items-center gap-2 mb-3">
-        <div className="w-7 h-7 rounded-lg bg-cyan-500/15 flex items-center justify-center">
-          <Medal className="w-4 h-4 text-cyan-500" />
-        </div>
-        <div className="flex-1">
-          <p className="text-[11px] font-bold tracking-tight text-foreground leading-none">Weekly Volume</p>
-          <p className="text-[9px] text-muted-foreground mt-0.5">USA · This week</p>
-        </div>
-      </div>
-      <div className="space-y-1.5">
-        {rows.map((r, i) => (
-          <motion.div
-            key={r.rank}
-            initial={{ opacity: 0, x: -10 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ delay: 0.15 + i * 0.15, duration: 0.35 }}
-            className={`relative flex items-center gap-2 rounded-lg px-2 py-1.5 ${r.isYou ? 'bg-primary/10 ring-1 ring-primary/30' : 'bg-secondary/50'}`}
-          >
-            <span className="text-[11px]">{r.medal}</span>
-            <span className="text-[10px] font-bold text-foreground w-16 truncate">{r.handle}</span>
-            <div className="flex-1 h-2 rounded-full bg-card overflow-hidden">
-              <motion.div
-                initial={{ width: 0 }}
-                animate={{ width: `${(r.value / max) * 100}%` }}
-                transition={{ delay: 0.35 + i * 0.15, duration: 0.8, ease: 'easeOut' }}
-                className={`h-full rounded-full bg-gradient-to-r ${r.color}`}
-              />
-            </div>
-            <span className="text-[9px] font-bold text-foreground tabular-nums w-9 text-right">{(r.value / 1000).toFixed(1)}k</span>
-          </motion.div>
-        ))}
-      </div>
-    </VisualFrame>
-  );
-}
-
-// ── WelcomeScreen ─────────────────────────────────────────────────────────────
-
-function WelcomeScreen({ onGetStarted }) {
-  const { t } = useLanguage();
-  const [slide, setSlide] = useState(0);
-  const [direction, setDirection] = useState(1);
-
-  const features = [
-    { Visual: WorkoutLogVisual,    title: t('onboarding.slide.workout.title'),      description: t('onboarding.slide.workout.desc') },
-    { Visual: ProgressChartVisual, title: t('onboarding.slide.progress.title'),     description: t('onboarding.slide.progress.desc') },
-    { Visual: MacrosVisual,        title: t('onboarding.slide.nutrition.title'),    description: t('onboarding.slide.nutrition.desc') },
-    { Visual: GoalsVisual,         title: t('onboarding.slide.goals.title'),        description: t('onboarding.slide.goals.desc') },
-    { Visual: HubVisual,           title: t('onboarding.slide.hub.title'),          description: t('onboarding.slide.hub.desc') },
-    { Visual: LeaderboardVisual,   title: t('onboarding.slide.leaderboards.title'), description: t('onboarding.slide.leaderboards.desc') },
-  ];
-
-  useEffect(() => {
-    if (getWasFirstLaunchThisSession()) {
-      setTimeout(() => {
-        toast.success(t('onboarding.toast.welcome'), {
-          description: t('onboarding.toast.welcomeDesc'),
-          duration: 4000,
-        });
-      }, 800);
-    }
-  }, []);
-
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setDirection(1);
-      setSlide(s => (s + 1) % features.length);
-    }, 4500);
-    return () => clearInterval(timer);
-  }, [features.length]);
-
-  const goTo = (i) => {
-    setDirection(i > slide ? 1 : -1);
-    setSlide(i);
-  };
-
-  const feat = features[slide];
-  const Visual = feat.Visual;
-
-  const slideVariants = {
-    enter: (dir) => ({ opacity: 0, x: dir > 0 ? 50 : -50 }),
-    center: { opacity: 1, x: 0 },
-    exit: (dir) => ({ opacity: 0, x: dir > 0 ? -50 : 50 }),
-  };
-
-  return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: 0.5, ease: 'easeInOut' }}
-      className="relative fixed inset-0 bg-background flex flex-col items-center justify-between p-6 pb-10"
-    >
-      {/* Ambient gradients */}
-      <div aria-hidden="true" className="pointer-events-none absolute top-0 left-1/2 -translate-x-1/2 w-full h-[480px]" style={{ background: 'radial-gradient(ellipse 900px 480px at 50% 0%, hsl(var(--primary) / 0.10), transparent 70%)' }} />
-      <div aria-hidden="true" className="pointer-events-none absolute bottom-0 left-0 w-full h-64" style={{ background: 'radial-gradient(ellipse 700px 280px at 30% 100%, hsl(var(--primary) / 0.06), transparent 65%)' }} />
-
-      {/* Logo */}
-      <div className="relative pt-10 flex flex-col items-center gap-2 w-full max-w-sm">
-        <motion.div
-          initial={{ scale: 0.85, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
-          transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
-          className="relative"
-        >
-          <div className="absolute inset-0 rounded-3xl bg-primary/30 blur-2xl" aria-hidden="true" />
-          <motion.div
-            animate={{ scale: [1, 1.03, 1] }}
-            transition={{ duration: 4, repeat: Infinity, ease: 'easeInOut' }}
-            className="relative w-16 h-16 rounded-2xl overflow-hidden shadow-xl shadow-primary/30 ring-1 ring-primary/20"
-          >
-            <img src="{LOGO_URL}" alt="Flexyn" className="w-full h-full object-contain" />
-          </motion.div>
-        </motion.div>
-        <p className="font-heading text-3xl font-bold tracking-tight bg-gradient-to-b from-foreground to-foreground/70 bg-clip-text text-transparent">{t('app.name')}</p>
-        <p className="text-sm text-muted-foreground">{t('app.tagline')}</p>
-        <p className="text-xs text-muted-foreground mt-1">{t('onboarding.welcome.languageHint')}</p>
-        <div className="flex justify-center mt-3 mb-8">
-          <LanguagePicker variant="compact" />
-        </div>
-      </div>
-
-      {/* Feature Slideshow */}
-      <div className="relative w-full max-w-sm flex-1 flex flex-col items-center justify-center">
-        <div className="w-full overflow-hidden">
-          <AnimatePresence mode="wait" custom={direction}>
-            <motion.div
-              key={slide}
-              custom={direction}
-              variants={slideVariants}
-              initial="enter"
-              animate="center"
-              exit="exit"
-              transition={{ duration: 0.35, ease: 'easeInOut' }}
-              className="flex flex-col items-center text-center px-4"
-            >
-              <Visual />
-              <h2 className="font-heading text-xl md:text-2xl font-bold tracking-tight mb-2">{feat.title}</h2>
-              <p className="text-muted-foreground text-[13px] leading-relaxed max-w-xs">{feat.description}</p>
+        {/* Stat grid */}
+        <div className="grid grid-cols-2 gap-3 mb-3">
+          {[
+            { label: 'Block length', value: weeks, unit: 'weeks', delay: 0.7 },
+            { label: 'Weekly volume', value: weeklyVol, unit: 'sets', delay: 0.78 },
+          ].map(({ label, value, unit, delay }) => (
+            <motion.div key={label} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay }}
+              className="rounded-2xl border bg-card p-4">
+              <div className="font-mono text-[10px] font-semibold tracking-[0.12em] uppercase text-muted-foreground mb-2">{label}</div>
+              <div className="font-heading font-bold text-2xl tracking-tight text-foreground">
+                {value}<span className="text-muted-foreground text-[13px] font-semibold ml-1">{unit}</span>
+              </div>
             </motion.div>
-          </AnimatePresence>
-        </div>
-
-        {/* Dots */}
-        <div className="flex gap-1.5 mt-8">
-          {features.map((_, i) => (
-            <button
-              key={i}
-              onClick={() => goTo(i)}
-              aria-label={`Go to slide ${i + 1}`}
-              className={`h-1.5 rounded-full transition-all duration-300 ${
-                i === slide ? 'w-5 bg-primary' : 'w-1.5 bg-border hover:bg-muted-foreground/40'
-              }`}
-            />
           ))}
         </div>
-      </div>
 
-      {/* CTA */}
-      <div className="relative w-full max-w-sm space-y-3 mt-6">
-        <div className="flex items-center justify-center gap-2 mb-1 text-[11px] text-muted-foreground">
-          <span className="flex items-center gap-1">
-            <Check className="w-3 h-3 text-primary" strokeWidth={3} />
-            {t('onboarding.welcome.trust.free')}
-          </span>
-          <span className="text-border">•</span>
-          <span className="flex items-center gap-1">
-            <Check className="w-3 h-3 text-primary" strokeWidth={3} />
-            {t('onboarding.welcome.trust.noCard')}
-          </span>
-          <span className="text-border">•</span>
-          <span className="flex items-center gap-1">
-            <Check className="w-3 h-3 text-primary" strokeWidth={3} />
-            {t('onboarding.welcome.trust.private')}
-          </span>
-        </div>
-        <Button
-          className="w-full h-14 font-heading font-bold text-base shadow-lg shadow-primary/25 hover:shadow-xl hover:shadow-primary/30 transition-shadow"
-          onClick={onGetStarted}
-        >
-          {t('onboarding.welcome.getStarted')}
-          <motion.span
-            animate={{ x: [0, 3, 0] }}
-            transition={{ duration: 1.4, repeat: Infinity, ease: 'easeInOut' }}
-            className="ml-1 inline-flex"
-          >
-            <ArrowRight className="w-5 h-5" />
-          </motion.span>
-        </Button>
-        <p className="text-xs text-muted-foreground text-center">{t('onboarding.welcome.tagline')}</p>
-      </div>
-    </motion.div>
-  );
-}
-
-function CreateAccountScreen({ onNext }) {
-  const { t } = useLanguage();
-  return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: 0.5, ease: 'easeInOut' }}
-      className="relative fixed inset-0 bg-background flex flex-col items-center justify-between p-6 pb-10"
-    >
-      {/* Ambient gradients */}
-      <div aria-hidden="true" className="pointer-events-none absolute top-0 left-1/2 -translate-x-1/2 w-full h-[480px]" style={{ background: 'radial-gradient(ellipse 900px 480px at 50% 0%, hsl(var(--primary) / 0.10), transparent 70%)' }} />
-      <div aria-hidden="true" className="pointer-events-none absolute bottom-0 left-0 w-full h-64" style={{ background: 'radial-gradient(ellipse 700px 280px at 30% 100%, hsl(var(--primary) / 0.06), transparent 65%)' }} />
-
-      <div className="relative pt-10 flex flex-col items-center gap-2">
-         <div className="w-14 h-14 rounded-2xl overflow-hidden shadow-lg shadow-primary/30">
-           <img src="{LOGO_URL}" alt="Flexyn" className="w-full h-full object-contain" />
-         </div>
-         <div className="flex justify-center mt-3 mb-8">
-           <LanguagePicker variant="compact" />
-         </div>
-       </div>
-
-      <div className="relative w-full max-w-sm flex-1 flex flex-col items-center justify-center text-center px-4">
-        <motion.div
-          initial={{ scale: 0.85, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
-          transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
-          className="relative mb-6"
-        >
-          <div className="absolute inset-0 rounded-3xl bg-primary/25 blur-2xl" aria-hidden="true" />
-          <div className="relative w-20 h-20 rounded-3xl bg-primary/10 flex items-center justify-center ring-1 ring-primary/20 shadow-lg">
-            <LogIn className="w-10 h-10 text-primary" />
+        {/* First session card */}
+        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.86 }}
+          className="rounded-2xl border bg-card p-4">
+          <div className="flex items-center justify-between mb-2">
+            <span className="font-mono text-[10px] font-semibold tracking-[0.12em] uppercase text-muted-foreground">First session — tomorrow</span>
+            <span className="font-mono text-[10px] font-bold text-emerald-500">● READY</span>
+          </div>
+          <div className="font-heading font-bold text-[17px] tracking-tight text-foreground">Lower body · Foundation</div>
+          <div className="flex items-center gap-3 mt-2 text-[12px] text-muted-foreground">
+            <span>⏱ 52 min</span><span>· 6 lifts</span><span>· 18 sets</span>
+          </div>
+          <div className="flex gap-1 mt-3">
+            {Array.from({ length: 18 }).map((_, i) => (
+              <motion.span key={i} className="flex-1 h-1 rounded-sm bg-primary/25"
+                initial={{ scaleX: 0 }} animate={{ scaleX: 1 }} transition={{ delay: 0.9 + i * 0.025, ease: [0.16,1,0.3,1] }}
+                style={{ transformOrigin: 'left' }} />
+            ))}
           </div>
         </motion.div>
-        <h2 className="font-heading text-2xl font-bold tracking-tight mb-3">{t('onboarding.createAccount.title')}</h2>
-        <p className="text-muted-foreground text-sm leading-relaxed mb-2">
-          {t('onboarding.createAccount.desc')}
-        </p>
-        <ul className="text-sm text-foreground/80 space-y-2.5 mt-5 mb-2 text-left w-full max-w-xs">
-          {[t('onboarding.createAccount.bullet1'), t('onboarding.createAccount.bullet2'), t('onboarding.createAccount.bullet3')].map((item, i) => (
-            <motion.li
-              key={i}
-              initial={{ opacity: 0, x: -8 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: 0.25 + i * 0.08, duration: 0.4 }}
-              className="flex items-start gap-2.5"
-            >
-              <span className="mt-0.5 w-4 h-4 rounded-full bg-primary/15 flex items-center justify-center shrink-0">
-                <Check className="w-2.5 h-2.5 text-primary" strokeWidth={3} />
-              </span>
-              <span>{item}</span>
-            </motion.li>
-          ))}
-        </ul>
       </div>
 
-      <div className="relative w-full max-w-sm space-y-2 mt-8">
-        <Button
-          className="w-full h-14 font-heading font-bold text-base shadow-lg shadow-primary/25 hover:shadow-xl hover:shadow-primary/30 transition-shadow"
-          onClick={() => base44.auth.redirectToLogin('/')}
-        >
-          {t('onboarding.createAccount.cta')} <ArrowRight className="w-5 h-5 ml-1" />
-        </Button>
-        <Button variant="ghost" className="w-full text-sm text-muted-foreground hover:text-foreground" onClick={() => base44.auth.redirectToLogin('/')}>
-          {t('onboarding.createAccount.signIn')}
-        </Button>
-      </div>
-    </motion.div>
+      <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 1.1 }}
+        className="pt-4 shrink-0">
+        <PrimaryBtn onClick={onNext}>
+          Enter Flexyn <Icon name="arrow-right" size={18} strokeWidth={2.5} />
+        </PrimaryBtn>
+      </motion.div>
+    </div>
   );
 }
 
-function DemographicsStep({ saving, onNext }) {
-   const { t } = useLanguage();
-   const { setWeightUnit } = useWeightUnit();
-   const [showWhyInfo, setShowWhyInfo] = useState(false);
-   const [values, setValues] = useState({
-     username: '',
-     gender: null,
-     birthday: '',
-     height_inches: '',
-     height_cm: '',
-     weight_lbs: '',
-     weight_kg: '',
-     weight_stone: '',
-     heightUnit: 'imperial',
-     weightUnit: 'lbs',
-   });
-   const [selectingGender, setSelectingGender] = useState(false);
-   const [profanityOpen, setProfanityOpen] = useState(false);
-   const [bdayMonth, setBdayMonth] = useState('');
-   const [bdayDay, setBdayDay] = useState('');
-   const [bdayYear, setBdayYear] = useState('');
+/* ═══════════════════════════════════════════════════════════════
+   MAIN ONBOARDING ORCHESTRATOR
+═══════════════════════════════════════════════════════════════ */
 
-  const handleGenderSelect = (gender) => {
-    setValues(v => ({ ...v, gender: gender.toLowerCase() }));
-    setSelectingGender(false);
-  };
+const STEPS = ['welcome', 'goal', 'experience', 'stats', 'days', 'loading', 'reveal'];
+const FORM_STEP_NAMES = ['goal', 'experience', 'stats', 'days'];
+const TOTAL_FORM = FORM_STEP_NAMES.length;
 
-  const updateBirthday = (month, day, year) => {
-    if (month && day && year) {
-      const bdayStr = `${year}-${month}-${day.padStart(2, '0')}`;
-      setValues(v => ({ ...v, birthday: bdayStr }));
-    } else {
-      setValues(v => ({ ...v, birthday: '' }));
-    }
-  };
-
-  const handleBdayMonthChange = (month) => {
-    setBdayMonth(month);
-    updateBirthday(month, bdayDay, bdayYear);
-  };
-
-  const handleBdayDayChange = (day) => {
-    setBdayDay(day);
-    updateBirthday(bdayMonth, day, bdayYear);
-  };
-
-  const handleBdayYearChange = (year) => {
-    setBdayYear(year);
-    updateBirthday(bdayMonth, bdayDay, year);
-  };
-
-  const bdayConfirmation = bdayMonth && bdayDay && bdayYear
-    ? format(parse(`${bdayYear}-${bdayMonth}-${bdayDay}`, 'yyyy-MM-dd', new Date()), 'EEEE, MMMM do, yyyy')
-    : null;
-
-  const weightPlaceholder = 
-    values.weightUnit === 'lbs' ? '165' :
-    values.weightUnit === 'kg' ? '75' :
-    '11.8';
-
-  const convertHeight = (val, fromUnit, toUnit) => {
-    if (!val) return '';
-    const num = parseFloat(val);
-    if (fromUnit === 'imperial' && toUnit === 'metric') {
-      return (num * 2.54).toFixed(1);
-    } else if (fromUnit === 'metric' && toUnit === 'imperial') {
-      return (num / 2.54).toFixed(1);
-    }
-    return val;
-  };
-
-  const convertWeight = (val, fromUnit, toUnit) => {
-    if (!val) return '';
-    const num = parseFloat(val);
-    if (fromUnit === 'lbs' && toUnit === 'kg') return (num / 2.205).toFixed(1);
-    if (fromUnit === 'kg' && toUnit === 'lbs') return (num * 2.205).toFixed(1);
-    if (fromUnit === 'lbs' && toUnit === 'stone') return (num / 14).toFixed(2);
-    if (fromUnit === 'stone' && toUnit === 'lbs') return (num * 14).toFixed(1);
-    if (fromUnit === 'kg' && toUnit === 'stone') return (num / 6.35).toFixed(2);
-    if (fromUnit === 'stone' && toUnit === 'kg') return (num * 6.35).toFixed(1);
-    return val;
-  };
-
-  const handleHeightUnitChange = (unit) => {
-    const oldUnit = values.heightUnit;
-    if (oldUnit === 'imperial') {
-      const inches = parseFloat(values.height_inches);
-      if (inches) {
-        setValues(v => ({ ...v, height_cm: convertHeight(inches.toString(), 'imperial', 'metric'), heightUnit: unit }));
-      } else {
-        setValues(v => ({ ...v, heightUnit: unit }));
-      }
-    } else {
-      const cm = parseFloat(values.height_cm);
-      if (cm) {
-        setValues(v => ({ ...v, height_inches: convertHeight(cm.toString(), 'metric', 'imperial'), heightUnit: unit }));
-      } else {
-        setValues(v => ({ ...v, heightUnit: unit }));
-      }
-    }
-  };
-
-  const WEIGHT_RANGES = { lbs: [50, 700], kg: [22, 317], stone: [3.5, 50] };
-  const clampWeight = (val, unit) => {
-    const [min, max] = WEIGHT_RANGES[unit];
-    return String(Math.min(Math.max(parseFloat(val) || 0, min), max));
-  };
-
-  const handleWeightUnitChange = (unit) => {
-    const oldUnit = values.weightUnit;
-    let val = '';
-    if (oldUnit === 'lbs') val = values.weight_lbs;
-    else if (oldUnit === 'kg') val = values.weight_kg;
-    else if (oldUnit === 'stone') val = values.weight_stone;
-
-    if (val) {
-      const toLbs = clampWeight(convertWeight(val, oldUnit, 'lbs'), 'lbs');
-      const toKg = clampWeight(convertWeight(val, oldUnit, 'kg'), 'kg');
-      const toStone = clampWeight(convertWeight(val, oldUnit, 'stone'), 'stone');
-      setValues(v => ({
-        ...v,
-        weight_lbs: unit === 'lbs' ? clampWeight(val, 'lbs') : toLbs,
-        weight_kg: unit === 'kg' ? clampWeight(convertWeight(val, oldUnit, 'kg'), 'kg') : toKg,
-        weight_stone: unit === 'stone' ? clampWeight(convertWeight(val, oldUnit, 'stone'), 'stone') : toStone,
-        weightUnit: unit,
-      }));
-    } else {
-      setValues(v => ({ ...v, weightUnit: unit }));
-    }
-  };
-
-  // Expose current values snapshot so parent can collect them for the final save
-  const isComplete = values.username && values.gender && values.birthday && values.height_inches && values.weight_lbs;
-  // onNext receives the demographics payload to pass to the location step
-  const handleNext = () => {
-    if (!isComplete || saving) return;
-    if (containsProfanity(values.username)) {
-      toast.error('Please choose an appropriate username.');
-      return;
-    }
-    const [weightMin, weightMax] = WEIGHT_RANGES[values.weightUnit];
-    const weightVal = parseFloat(
-      values.weightUnit === 'lbs' ? values.weight_lbs :
-      values.weightUnit === 'kg' ? values.weight_kg :
-      values.weight_stone
-    );
-    if (isNaN(weightVal) || weightVal < weightMin || weightVal > weightMax) {
-      toast.error(`Please enter your actual body weight. Valid range: ${weightMin}–${weightMax} ${values.weightUnit}.`);
-      return;
-    }
-    onNext({
-      username: values.username.trim(),
-      gender: values.gender,
-      birthday: values.birthday,
-      height_inches: parseFloat(values.height_inches),
-      weight_lbs: parseFloat(values.weight_lbs),
-      weight_unit: values.weightUnit,
-    });
-  };
-
-  return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: 0.5, ease: 'easeInOut' }}
-      className="relative fixed inset-0 bg-background flex flex-col items-center justify-start overflow-y-auto p-4 md:p-6"
-    >
-      {/* Ambient gradients */}
-      <div aria-hidden="true" className="pointer-events-none absolute top-0 left-1/2 -translate-x-1/2 w-full h-[480px]" style={{ background: 'radial-gradient(ellipse 900px 480px at 50% 0%, hsl(var(--primary) / 0.10), transparent 70%)' }} />
-      <div aria-hidden="true" className="pointer-events-none absolute bottom-0 left-0 w-full h-64" style={{ background: 'radial-gradient(ellipse 700px 280px at 30% 100%, hsl(var(--primary) / 0.06), transparent 65%)' }} />
-
-      <div className="relative w-full max-w-md py-6 md:py-8 pb-10">
-        <div className="flex justify-center mb-3">
-          <span className="text-[10px] font-bold uppercase tracking-widest text-primary bg-primary/10 px-2.5 py-1 rounded-full">
-            {t('onboarding.demographics.stepLabel') || 'Step 1 of 2'}
-          </span>
-        </div>
-        <h1 className="font-heading text-2xl md:text-3xl font-bold tracking-tight mb-1 text-center">{t('onboarding.demographics.title')}</h1>
-        <p className="text-muted-foreground text-xs md:text-sm text-center mb-4">{t('onboarding.demographics.subtitle')}</p>
-
-        {/* Collapsible Info Section */}
-        <button
-          type="button"
-          onClick={() => setShowWhyInfo(v => !v)}
-          className="w-full flex items-center justify-between gap-2 mb-4 px-3 py-2 rounded-lg bg-primary/5 border border-primary/20 hover:bg-primary/10 transition-colors"
-        >
-          <div className="flex items-center gap-2">
-            <Info className="w-3.5 h-3.5 text-primary shrink-0" />
-            <span className="text-xs font-medium text-foreground">{t('onboarding.demographics.whyTitle')}</span>
-          </div>
-          <ChevronDown className={`w-3.5 h-3.5 text-muted-foreground transition-transform ${showWhyInfo ? 'rotate-180' : ''}`} />
-        </button>
-        {showWhyInfo && (
-          <div className="mb-4 px-3 py-2 rounded-lg bg-primary/5 border border-primary/20">
-            <p className="text-xs text-muted-foreground leading-relaxed">
-              {t('onboarding.demographics.whyBody')}
-            </p>
-          </div>
-        )}
-
-        <div className="space-y-4">
-          {/* Username */}
-          <div>
-            <label className="text-sm font-medium text-foreground mb-2 block">{t('onboarding.demographics.username')}</label>
-            <Input
-              type="text"
-              placeholder={t('onboarding.demographics.usernamePlaceholder')}
-              value={values.username}
-              onChange={e => {
-                const val = e.target.value.trim();
-                if (containsProfanity(val)) {
-                  setProfanityOpen(true);
-                } else {
-                  setValues(v => ({ ...v, username: val }));
-                }
-              }}
-              maxLength="30"
-              className="h-12"
-            />
-            <p className="text-xs text-muted-foreground mt-1">{values.username.length}/30 characters</p>
-          </div>
-
-          {/* Gender Selection */}
-          <div>
-            <label className="text-sm font-medium text-foreground mb-2 block">{t('onboarding.demographics.gender')}</label>
-            {!selectingGender ? (
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setSelectingGender(true)}
-                className="w-full h-12 justify-center"
-              >
-                {values.gender ? `${values.gender.charAt(0).toUpperCase() + values.gender.slice(1)} ${t('onboarding.demographics.genderChange')}` : t('onboarding.demographics.genderSelect')}
-              </Button>
-            ) : (
-              <div className="space-y-2">
-                {[
-                  [t('onboarding.demographics.genderMale'), 'male'],
-                  [t('onboarding.demographics.genderFemale'), 'female'],
-                  [t('onboarding.demographics.genderOther'), 'other'],
-                ].map(([label, value]) => (
-                  <button
-                    key={value}
-                    onClick={() => handleGenderSelect(value)}
-                    className="w-full px-4 py-3 text-sm font-medium border border-border rounded-lg hover:bg-secondary transition-colors text-center"
-                  >
-                    {label}
-                  </button>
-                ))}
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => setSelectingGender(false)}
-                  className="w-full"
-                  disabled={!values.gender}
-                >
-                  <Check className="w-4 h-4 mr-2" /> {t('onboarding.demographics.confirm')}
-                </Button>
-              </div>
-            )}
-          </div>
-
-          {/* Birthday */}
-          <div>
-            <label className="text-sm font-medium text-foreground mb-2 block">{t('onboarding.demographics.birthday')}</label>
-            <div className="flex gap-2 mb-3">
-              <Select value={bdayMonth} onValueChange={handleBdayMonthChange}>
-                <SelectTrigger className="h-12 flex-1 text-center">
-                  <SelectValue placeholder="Month" />
-                </SelectTrigger>
-                <SelectContent>
-                  {['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].map((m, i) => (
-                    <SelectItem key={i} value={String(i + 1).padStart(2, '0')}>{m}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Select value={bdayDay} onValueChange={handleBdayDayChange}>
-                <SelectTrigger className="h-12 flex-1 text-center">
-                  <SelectValue placeholder="Day" />
-                </SelectTrigger>
-                <SelectContent>
-                  {Array.from({ length: 31 }, (_, i) => i + 1).map(d => (
-                    <SelectItem key={d} value={String(d)}>{d}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Select value={bdayYear} onValueChange={handleBdayYearChange}>
-                <SelectTrigger className="h-12 flex-1 text-center">
-                  <SelectValue placeholder="Year" />
-                </SelectTrigger>
-                <SelectContent>
-                    {Array.from({ length: 2013 - 1940 + 1 }, (_, i) => 2013 - i).map(y => (
-                      <SelectItem key={y} value={String(y)}>{y}</SelectItem>
-                    ))}
-                  </SelectContent>
-              </Select>
-            </div>
-            {bdayConfirmation && (
-              <p className="text-xs text-primary font-medium">{t('onboarding.demographics.birthdayConfirm')} {bdayConfirmation}</p>
-            )}
-          </div>
-
-          {/* Height */}
-          <div>
-            <label className="text-sm font-medium text-foreground mb-2 block">{t('onboarding.demographics.height')}</label>
-            <div className="flex gap-2 mb-3">
-              <button
-                type="button"
-                onClick={() => handleHeightUnitChange('imperial')}
-                className={`flex-1 px-3 py-2 text-xs font-medium rounded-md transition-colors ${values.heightUnit === 'imperial' ? 'bg-primary text-primary-foreground' : 'border border-border hover:bg-secondary'}`}
-              >
-                ft / in
-              </button>
-              <button
-                type="button"
-                onClick={() => handleHeightUnitChange('metric')}
-                className={`flex-1 px-3 py-2 text-xs font-medium rounded-md transition-colors ${values.heightUnit === 'metric' ? 'bg-primary text-primary-foreground' : 'border border-border hover:bg-secondary'}`}
-              >
-                cm
-              </button>
-            </div>
-            {values.heightUnit === 'imperial' ? (
-              <div className="flex gap-2">
-                <Select value={String(Math.floor(parseFloat(values.height_inches) / 12) || '')} onValueChange={(ft) => {
-                  const in_val = parseFloat(values.height_inches) % 12 || 0;
-                  const total = parseInt(ft) * 12 + in_val;
-                  setValues(v => ({ ...v, height_inches: total.toString(), height_cm: convertHeight(total.toString(), 'imperial', 'metric') }));
-                }}>
-                  <SelectTrigger className="h-12 flex-1 text-center">
-                    <SelectValue placeholder="Feet" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {Array.from({ length: 9 }, (_, i) => i).map(ft => (
-                      <SelectItem key={ft} value={String(ft)}>{ft}'</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Select value={String(Math.round(parseFloat(values.height_inches) % 12) || '')} onValueChange={(inches) => {
-                  const ft = Math.floor(parseFloat(values.height_inches) / 12) || 0;
-                  const total = ft * 12 + parseInt(inches);
-                  setValues(v => ({ ...v, height_inches: total.toString(), height_cm: convertHeight(total.toString(), 'imperial', 'metric') }));
-                }}>
-                  <SelectTrigger className="h-12 flex-1 text-center">
-                    <SelectValue placeholder="Inches" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {Array.from({ length: 12 }, (_, i) => i).map(in_val => (
-                      <SelectItem key={in_val} value={String(in_val)}>{in_val}"</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            ) : (
-              <Select value={values.height_cm} onValueChange={(cm) => {
-                setValues(v => ({ ...v, height_cm: cm, height_inches: convertHeight(cm, 'metric', 'imperial') }));
-              }}>
-                <SelectTrigger className="h-12 text-center">
-                  <SelectValue placeholder="Height in cm" />
-                </SelectTrigger>
-                <SelectContent>
-                  {Array.from({ length: 151 }, (_, i) => 100 + i).map(cm => (
-                    <SelectItem key={cm} value={String(cm)}>{cm} cm</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-          </div>
-
-          {/* Weight */}
-          <div>
-            <label className="text-sm font-medium text-foreground mb-2 block">{t('onboarding.demographics.weight')}</label>
-            <div className="flex gap-2 mb-3 flex-wrap">
-              {['lbs', 'kg', 'stone'].map(unit => (
-                <button
-                  key={unit}
-                  type="button"
-                  onClick={() => handleWeightUnitChange(unit)}
-                  className={`px-3 py-2 text-xs font-medium rounded-md transition-colors ${values.weightUnit === unit ? 'bg-primary text-primary-foreground' : 'border border-border hover:bg-secondary'}`}
-                >
-                  {unit}
-                </button>
-              ))}
-            </div>
-            <div className="relative">
-              <Input
-                type="number"
-                placeholder={weightPlaceholder}
-                value={
-                  values.weightUnit === 'lbs' ? values.weight_lbs :
-                  values.weightUnit === 'kg' ? values.weight_kg :
-                  values.weight_stone
-                }
-                onChange={e => {
-                  const raw = e.target.value;
-                  if (raw === '') {
-                    setValues(v => ({ ...v, weight_lbs: '', weight_kg: '', weight_stone: '' }));
-                    return;
-                  }
-                  const key = values.weightUnit === 'lbs' ? 'weight_lbs' : values.weightUnit === 'kg' ? 'weight_kg' : 'weight_stone';
-                  setValues(v => ({ ...v, [key]: raw }));
-                }}
-                onKeyDown={e => { if (['-', '+', 'e', 'E'].includes(e.key)) e.preventDefault(); }}
-                className="h-12 text-center pr-12"
-              />
-              <span className="absolute right-4 top-1/2 -translate-y-1/2 text-sm text-muted-foreground font-medium">{values.weightUnit}</span>
-            </div>
-            <p className="text-xs text-muted-foreground mt-1 text-center">
-              {values.weightUnit === 'lbs' && t('onboarding.demographics.weightRangeLbs')}
-              {values.weightUnit === 'kg' && t('onboarding.demographics.weightRangeKg')}
-              {values.weightUnit === 'stone' && t('onboarding.demographics.weightRangeStone')}
-            </p>
-          </div>
-        </div>
-
-        <Button
-          className="w-full h-12 font-heading font-bold text-base mt-6"
-          onClick={handleNext}
-          disabled={!isComplete || saving}
-        >
-          {t('common.next')} <ArrowRight className="w-5 h-5 ml-1" />
-        </Button>
-      </div>
-
-      <ProfanityWarningDialog
-        open={profanityOpen}
-        onContinue={() => {
-          setValues(v => ({ ...v, username: '' }));
-          setProfanityOpen(false);
-        }}
-      />
-    </motion.div>
-  );
-}
+const SLIDE_VARIANTS = {
+  enter:  (dir) => ({ opacity: 0, x: dir > 0 ? 40 : -40 }),
+  center: { opacity: 1, x: 0 },
+  exit:   (dir) => ({ opacity: 0, x: dir > 0 ? -40 : 40 }),
+};
 
 export default function Onboarding() {
   const navigate = useNavigate();
   const { isAuthenticated, isLoadingAuth, checkUserAuth, user } = useAuth();
   const { setWeightUnit } = useWeightUnit();
-  const urlParams = new URLSearchParams(window.location.search);
-  const urlStep = urlParams.get('step');
 
-  const initialScreen = urlStep || (isAuthenticated ? 'demographics' : 'welcome');
-  const [screen, setScreen] = useState(initialScreen);
+  const [stepIdx, setStepIdx] = useState(0);
+  const [direction, setDirection] = useState(1);
   const [saving, setSaving] = useState(false);
-  // Holds demographics payload while waiting on location step
-  const [demographicsData, setDemographicsData] = useState(null);
 
-  useEffect(() => {
-    if (isAuthenticated && (screen === 'welcome' || screen === 'create-account')) {
-      setScreen('demographics');
-    }
-  }, [isAuthenticated, screen]);
+  const [data, setData] = useState({
+    username: '',
+    goal: [],
+    level: null,
+    stats: {
+      age: 26,
+      heightCm: 175, heightIn: 69,
+      weightKg: 75, weightLb: 165,
+      heightUnit: 'cm', weightUnit: 'kg',
+    },
+    days: [],
+    preferredTime: '',
+  });
 
-  // If user already completed onboarding (or has a username from a previous session),
-  // redirect straight to dashboard — don't show the form again.
+  const [usernameError, setUsernameError] = useState('');
+
+  // If already authenticated with a profile, redirect straight to dashboard
   useEffect(() => {
     if (user?.onboarding_complete || user?.username) {
       navigate('/dashboard', { replace: true });
     }
   }, [user?.onboarding_complete, user?.username]);
 
-  const handleDemographicsNext = (data) => {
-    setDemographicsData(data);
-    setScreen('location');
+  // If they authenticated via the "get started" flow, skip to goal step
+  useEffect(() => {
+    if (isAuthenticated && stepIdx === 0) {
+      goTo(1);
+    }
+  }, [isAuthenticated]);
+
+  const goTo = (idx) => {
+    setDirection(idx > stepIdx ? 1 : -1);
+    setStepIdx(idx);
   };
 
-  const handleLocationNext = async ({ country_code, state_code }) => {
+  const next = () => goTo(Math.min(STEPS.length - 1, stepIdx + 1));
+  const back = () => goTo(Math.max(0, stepIdx - 1));
+
+  const stepName = STEPS[stepIdx];
+  const formStep = FORM_STEP_NAMES.indexOf(stepName) + 1; // 0 if not a form step
+
+  const handleUsernameChange = (val) => {
+    setData(d => ({ ...d, username: val }));
+    if (val.length >= 2 && containsProfanity(val)) {
+      setUsernameError('Username contains inappropriate language.');
+    } else if (val.length > 20) {
+      setUsernameError('Username must be 20 characters or less.');
+    } else {
+      setUsernameError('');
+    }
+  };
+
+  const handleRevealNext = async () => {
     setSaving(true);
     try {
+      const s = data.stats;
       await base44.auth.updateMe({
-        ...demographicsData,
-        country_code,
-        state_code: state_code || null,
+        username: data.username.trim(),
+        fitness_goals: data.goal,
+        fitness_level: data.level,
+        training_days: data.days,
+        preferred_workout_time: data.preferredTime,
+        age: s.age,
+        height_cm: s.heightUnit === 'cm' ? String(s.heightCm) : String(Math.round(s.heightIn * 2.54)),
+        height_inches: s.heightUnit === 'in' ? String(s.heightIn) : String(Math.round(s.heightCm / 2.54)),
+        height_unit: s.heightUnit === 'cm' ? 'metric' : 'imperial',
+        weight_kg: s.weightUnit === 'kg' ? String(s.weightKg) : String(Math.round(s.weightLb * 0.453592)),
+        weight_lbs: s.weightUnit === 'lb' ? String(s.weightLb) : String(Math.round(s.weightKg / 0.453592)),
+        weight_unit: s.weightUnit === 'kg' ? 'kg' : 'lbs',
         onboarding_complete: true,
       });
-      setWeightUnit(demographicsData.weight_unit);
+      setWeightUnit(s.weightUnit === 'kg' ? 'kg' : 'lbs');
       markReturningUser();
       if (checkUserAuth) await checkUserAuth();
-      setSaving(false);
-      navigate('/dashboard', { replace: true });
     } catch (err) {
-      console.error('Onboarding submit failed:', err);
-      // Still navigate to dashboard even if the profile save fails
-      // (e.g. CORS from a preview deployment). User can update profile later.
-      markReturningUser();
-      setSaving(false);
-      // Only show the error in production — on localhost it's just a CORS dev quirk
+      console.error('Onboarding save failed:', err);
       if (import.meta.env.PROD) {
         toast.error('Profile save failed — you can update it later in Settings.');
       }
+      markReturningUser();
+    } finally {
+      setSaving(false);
       navigate('/dashboard', { replace: true });
     }
   };
@@ -1087,25 +1075,71 @@ export default function Onboarding() {
   if (isLoadingAuth) {
     return (
       <div className="fixed inset-0 flex items-center justify-center bg-background">
-        <div className="w-8 h-8 border-4 border-slate-200 border-t-slate-800 rounded-full animate-spin"></div>
+        <div className="w-8 h-8 border-4 border-primary/30 border-t-primary rounded-full animate-spin" />
       </div>
     );
   }
 
   return (
-    <AnimatePresence mode="wait">
-      {screen === 'welcome' && (
-        <WelcomeScreen onGetStarted={() => setScreen('create-account')} />
-      )}
-      {screen === 'create-account' && (
-        <CreateAccountScreen onNext={() => setScreen('demographics')} />
-      )}
-      {screen === 'demographics' && (
-        <DemographicsStep saving={saving} onNext={handleDemographicsNext} />
-      )}
-      {screen === 'location' && (
-        <LocationStep onNext={handleLocationNext} />
-      )}
-    </AnimatePresence>
+    <div className="fixed inset-0 bg-background overflow-hidden">
+      <Aurora />
+
+      <div className="relative z-10 h-full flex items-start justify-center overflow-hidden">
+        <div className="w-full max-w-[420px] h-full px-6 py-10 flex flex-col">
+          <AnimatePresence mode="wait" custom={direction}>
+            <motion.div key={stepName} custom={direction}
+              variants={SLIDE_VARIANTS} initial="enter" animate="center" exit="exit"
+              transition={{ duration: 0.38, ease: [0.16, 1, 0.3, 1] }}
+              className="flex-1 flex flex-col min-h-0">
+
+              {stepName === 'welcome' && (
+                <WelcomeStep
+                  onNext={() => {
+                    if (isAuthenticated) { next(); }
+                    else { base44.auth.redirectToLogin('/'); }
+                  }}
+                  onSignIn={() => base44.auth.redirectToLogin('/')}
+                />
+              )}
+
+              {stepName === 'goal' && (
+                <GoalStep step={formStep} total={TOTAL_FORM}
+                  value={data.goal} onChange={v => setData(d => ({ ...d, goal: v }))}
+                  onNext={next} onBack={back} />
+              )}
+
+              {stepName === 'experience' && (
+                <ExperienceStep step={formStep} total={TOTAL_FORM}
+                  value={data.level} onChange={v => setData(d => ({ ...d, level: v }))}
+                  onNext={next} onBack={back} />
+              )}
+
+              {stepName === 'stats' && (
+                <StatsStep step={formStep} total={TOTAL_FORM}
+                  username={data.username} onUsernameChange={handleUsernameChange}
+                  usernameError={usernameError}
+                  stats={data.stats} onChange={s => setData(d => ({ ...d, stats: s }))}
+                  onNext={next} onBack={back} />
+              )}
+
+              {stepName === 'days' && (
+                <DaysStep step={formStep} total={TOTAL_FORM}
+                  days={data.days} preferredTime={data.preferredTime}
+                  onDaysChange={v => setData(d => ({ ...d, days: v }))}
+                  onTimeChange={v => setData(d => ({ ...d, preferredTime: v }))}
+                  onNext={next} onBack={back} />
+              )}
+
+              {stepName === 'loading' && <LoadingStep onDone={next} />}
+
+              {stepName === 'reveal' && (
+                <RevealStep data={data} onNext={handleRevealNext} />
+              )}
+
+            </motion.div>
+          </AnimatePresence>
+        </div>
+      </div>
+    </div>
   );
 }
