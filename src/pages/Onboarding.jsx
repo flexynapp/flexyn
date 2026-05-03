@@ -1043,12 +1043,13 @@ export default function Onboarding() {
     }
   }, [isAuthenticated, screen]);
 
-  // If user already completed onboarding, redirect straight to dashboard.
+  // If user already completed onboarding (or has a username from a previous session),
+  // redirect straight to dashboard — don't show the form again.
   useEffect(() => {
-    if (user?.onboarding_complete) {
+    if (user?.onboarding_complete || user?.username) {
       navigate('/dashboard', { replace: true });
     }
-  }, [user?.onboarding_complete]);
+  }, [user?.onboarding_complete, user?.username]);
 
   const handleDemographicsNext = (data) => {
     setDemographicsData(data);

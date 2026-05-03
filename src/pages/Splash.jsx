@@ -16,8 +16,10 @@ export default function Splash() {
         return;
       }
       const user = await base44.auth.me().catch(() => null);
-      if (!user || !user.onboarding_complete) {
-        // If user is authenticated but onboarding incomplete, jump straight to demographics
+      if (!user || (!user.onboarding_complete && !user.username)) {
+        // Only show onboarding if BOTH onboarding_complete is false AND username is unset.
+        // If the user already has a username they completed onboarding before — send them
+        // to the dashboard even if the onboarding_complete flag got cleared (e.g. account reset).
         const target = isAuthed ? '/onboarding?step=demographics' : '/onboarding';
         navigate(target, { replace: true });
       } else {
